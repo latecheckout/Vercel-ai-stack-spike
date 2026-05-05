@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+tmp_types/
+
+# Next.js
+.next/
+out/
+
+# Env files (never commit real keys)
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+
+# Vercel
+.vercel
+
+# Workflow DevKit
+.workflow/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+*.swp
+*.swo
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Claude Code (per-user settings)
+.claude/
