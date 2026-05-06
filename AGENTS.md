@@ -6,8 +6,9 @@ to work with this repo. Read it before touching any code.
 ## Project
 
 **What it is:** Standalone spike to validate the Vercel AI Stack (Gateway, AI SDK v6,
-Workflow DevKit, Sandbox) on a real-feeling agent problem — a two-way learning chatbot
-for LCA (Late Checkout), an AI engineering studio.
+Workflow DevKit) on a real-feeling agent problem — a two-way learning chatbot
+for LCA (Late Checkout), an AI engineering studio. Vercel Sandbox was evaluated
+for the `research_visitor` tool and removed — see `pros-and-cons.md`.
 
 **What it is not:** Production. Not embedded in lca.agency. No auth. No analytics.
 This is a time-boxed learning exercise.
@@ -21,7 +22,6 @@ This is a time-boxed learning exercise.
 | Agent       | AI SDK v6 `DurableAgent` + Workflow DevKit       |
 | Model       | Anthropic Claude via Vercel AI Gateway           |
 | Database    | Supabase (Postgres + pgvector + RLS)             |
-| Sandbox     | Vercel Sandbox (Firecracker) for URL research    |
 | State       | React Query (`@tanstack/react-query` v5)         |
 
 ## Conventions
@@ -149,9 +149,5 @@ pnpm build              # must pass (catches route/export issues)
 Copy `.env.local.example` to `.env.local` and fill in:
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway API key
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY`
-- `VERCEL_OIDC_TOKEN` — required by `@vercel/sandbox` for the `research_visitor`
-  tool. Set up via `vercel login && vercel link && vercel env pull` (the pull
-  populates this var in `.env.local`). Token expires every 12 h — re-pull when
-  the Sandbox SDK starts 401-ing.
 - For Workflow DevKit local dev: the Next dev server runs the executor in-process
   via the `withWorkflow()` SWC plugin; no separate `npx workflow dev` needed.
