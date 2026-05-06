@@ -45,15 +45,45 @@ export function ChatInterface() {
   )
 }
 
+const RUN_ID_KEY = 'lca_chatbot_active_run_id'
+
 function ChatInterfaceInner() {
   const sessionId = useChatSession()
 
-  // WorkflowChatTransport sends { chatId, messages } to /api/chat
-  // and handles reconnection to the Workflow DevKit stream.
+  // If we're loading mid-stream (e.g. after a refresh while the agent was
+  // still talking), useChat picks this up and reconnects via the
+  // prepareReconnectToStreamRequest callback below.
+  const activeRunId = useMemo(() => {
+    if (typeof window === 'undefined') return undefined
+    return localStorage.getItem(RUN_ID_KEY) ?? undefined
+  }, [])
+
+  // WorkflowChatTransport sends { messages } by default — we override
+  // prepareSendMessagesRequest so chatId rides along in the body.
+  // It also captures the workflow run id from the response header and
+  // routes reconnection traffic to /api/chat/[runId]/stream.
   const transport = useMemo(
     () =>
       new WorkflowChatTransport({
         api: '/api/chat',
+        prepareSendMessagesRequest: ({ id, messages, body }) => ({
+          body: { chatId: id, messages, ...body },
+        }),
+        onChatSendMessage: (response) => {
+          const runId = response.headers.get('x-workflow-run-id')
+          if (runId) localStorage.setItem(RUN_ID_KEY, runId)
+        },
+        onChatEnd: () => {
+          localStorage.removeItem(RUN_ID_KEY)
+        },
+        prepareReconnectToStreamRequest: ({ api: _api, ...rest }) => {
+          const runId = localStorage.getItem(RUN_ID_KEY)
+          if (!runId) throw new Error('No active workflow run id to reconnect to')
+          return {
+            ...rest,
+            api: `/api/chat/${encodeURIComponent(runId)}/stream`,
+          }
+        },
       }),
     [],
   )
@@ -62,6 +92,7 @@ function ChatInterfaceInner() {
     // id becomes the chatId sent by WorkflowChatTransport
     id: sessionId ?? undefined,
     transport,
+    resume: Boolean(activeRunId),
   })
 
   // v6 useChat no longer manages input state — own it locally.

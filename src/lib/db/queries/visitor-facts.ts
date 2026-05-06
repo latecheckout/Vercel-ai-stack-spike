@@ -1,21 +1,21 @@
-import { createSupabaseClient } from '../client'
+import { createClient } from '@/lib/supabase/server'
+import type { Tables } from '@/types/database'
 
-export type VisitorFact = {
-  id: string
-  session_id: string
-  fact: string
-  category: 'company' | 'role' | 'website' | 'project' | 'other'
-  source: string
-  created_at: string
+// `category` lands as `string` in the generated types because the column
+// uses a CHECK constraint, not a true Postgres enum. Narrow it here so
+// the panel and tool layer get the union for free.
+export type VisitorFactCategory = 'company' | 'role' | 'website' | 'project' | 'other'
+export type VisitorFact = Omit<Tables<'visitor_facts'>, 'category'> & {
+  category: VisitorFactCategory
 }
 
 export async function saveVisitorFact(
   sessionId: string,
   fact: string,
-  category: VisitorFact['category'],
+  category: VisitorFactCategory,
   source: string,
 ): Promise<VisitorFact> {
-  const supabase = createSupabaseClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('visitor_facts')
@@ -28,7 +28,7 @@ export async function saveVisitorFact(
 }
 
 export async function getVisitorFacts(sessionId: string): Promise<VisitorFact[]> {
-  const supabase = createSupabaseClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('visitor_facts')
@@ -41,7 +41,7 @@ export async function getVisitorFacts(sessionId: string): Promise<VisitorFact[]>
 }
 
 export async function deleteVisitorFact(factId: string): Promise<void> {
-  const supabase = createSupabaseClient()
+  const supabase = await createClient()
 
   const { error } = await supabase.from('visitor_facts').delete().eq('id', factId)
 

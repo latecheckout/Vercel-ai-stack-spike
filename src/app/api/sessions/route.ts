@@ -19,6 +19,10 @@ export async function POST(req: Request) {
     const session = await upsertSession(sessionId)
     return NextResponse.json({ session })
   } catch (err) {
+    // Surface real DB / Supabase errors in the dev terminal — the previous
+    // version only echoed `error.message` to the client, leaving the cause
+    // invisible when the route 500'd.
+    console.error('[POST /api/sessions]', err)
     const message = err instanceof Error ? err.message : 'Unknown error'
     return NextResponse.json({ error: message }, { status: 500 })
   }

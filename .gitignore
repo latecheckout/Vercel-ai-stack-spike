@@ -34,3 +34,6 @@ Thumbs.db
 
 # Claude Code (per-user settings)
 .claude/
+
+.vercel
+scratch/

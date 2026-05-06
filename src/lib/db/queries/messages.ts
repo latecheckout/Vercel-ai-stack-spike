@@ -1,11 +1,9 @@
-import { createSupabaseClient } from '../client'
+import { createClient } from '@/lib/supabase/server'
+import type { Tables } from '@/types/database'
 
-export type DbMessage = {
-  id: string
-  session_id: string
+// Generated `role` is `string`; narrow it for app code.
+export type DbMessage = Omit<Tables<'messages'>, 'role'> & {
   role: 'user' | 'assistant'
-  content: string
-  created_at: string
 }
 
 export async function saveMessage(
@@ -13,7 +11,7 @@ export async function saveMessage(
   role: 'user' | 'assistant',
   content: string,
 ): Promise<DbMessage> {
-  const supabase = createSupabaseClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('messages')
@@ -26,7 +24,7 @@ export async function saveMessage(
 }
 
 export async function getMessages(sessionId: string): Promise<DbMessage[]> {
-  const supabase = createSupabaseClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('messages')
