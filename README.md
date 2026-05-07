@@ -1,8 +1,8 @@
 # LCA Chatbot — Vercel AI Stack Spike
 
 A standalone two-way learning chatbot for [LCA (Late Checkout)](https://lca.agency),
-built to validate the Vercel AI Stack — **AI SDK v6**, **Workflow DevKit**,
-**AI Gateway**, and **Vercel Sandbox** — on a real-feeling agent problem.
+built to validate the Vercel AI Stack — **AI SDK v6**, **Workflow DevKit**, and
+**AI Gateway** — on a real-feeling agent problem.
 
 The bot has two jobs: answer questions about LCA (grounded in a curated
 knowledge base) and learn about the visitor (anchor questions → optional
@@ -35,7 +35,6 @@ website research → personalised follow-ups).
 | Agent       | AI SDK v6 `DurableAgent` + Workflow DevKit              |
 | Model       | Anthropic Claude (`claude-sonnet-4.5`) via AI Gateway   |
 | Database    | Supabase (Postgres + RLS), declarative schemas          |
-| Sandbox     | Vercel Sandbox (Firecracker) for URL research           |
 | State       | React Query (`@tanstack/react-query` v5)                |
 
 ---
@@ -47,9 +46,8 @@ You'll need:
 - **Node.js 22+** and **pnpm 9+** (`corepack enable && corepack prepare pnpm@latest --activate`)
 - **Docker Desktop** — required by the Supabase CLI to run a local Postgres
 - **Supabase CLI** ≥ 1.200 — `npm i -g supabase` or `brew install supabase/tap/supabase`
-- **Vercel CLI** — `npm i -g vercel` (used for Gateway + Sandbox auth)
-- A **Vercel account** linked to the project (for `vercel env pull` and OIDC
-  tokens used by `@vercel/sandbox`)
+- **Vercel CLI** — `npm i -g vercel` (used to pull the Gateway API key)
+- A **Vercel account** linked to the project (for `vercel env pull`)
 
 You do **not** need: a hosted Supabase project, a separate workflow daemon, or
 any Anthropic/OpenAI keys directly — Gateway routes everything.
@@ -62,10 +60,10 @@ any Anthropic/OpenAI keys directly — Gateway routes everything.
 # 1. Install
 pnpm install
 
-# 2. Auth + pull env (writes .env.local with Gateway key + Sandbox OIDC token)
+# 2. Auth + pull env (writes .env.local with the Gateway API key)
 vercel login
 vercel link        # link this directory to the Vercel project
-vercel env pull    # writes AI_GATEWAY_API_KEY, VERCEL_OIDC_TOKEN, etc.
+vercel env pull    # writes AI_GATEWAY_API_KEY, etc.
 
 # 3. Start local Supabase (Postgres + Studio + auth at :54321/:54322/:54323)
 supabase start
@@ -82,7 +80,8 @@ pnpm dev
 ```
 
 Open the app, send a message, and watch the agent stream a reply. If you give
-it a URL, it'll spin up a Vercel Sandbox to fetch the page.
+it a URL, the `research_visitor` step fetches the page directly (with SSRF
+guards) and feeds the stripped text back to the model.
 
 ---
 
@@ -98,10 +97,6 @@ for the full template.
 | `NEXT_PUBLIC_SUPABASE_URL`      | `supabase status` → API URL (`http://127.0.0.1:54321`) | Browser + server Supabase clients |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `supabase status` → anon key                      | RLS-enforced reads/writes         |
 | `SUPABASE_SERVICE_ROLE_KEY`     | `supabase status` → service_role key              | Admin client (no admin routes yet)|
-| `VERCEL_OIDC_TOKEN`             | `vercel env pull` (auto-injected on Vercel)       | `@vercel/sandbox` auth            |
-
-> **OIDC tokens expire every 12 hours.** If `research_visitor` starts 401-ing
-> in local dev, re-run `vercel env pull`.
 
 ---
 
@@ -203,7 +198,7 @@ for the why.
 | Symptom                                                      | Likely cause / fix |
 |--------------------------------------------------------------|--------------------|
 | `{"fatal":true,"name":"FatalError"}` in the workflow stream  | Step not registered. Run the grep above and confirm every `'use step'` function appears. Most common cause: the function isn't *named*, or it's defined in a file other than `chat-workflow.ts`. |
-| `research_visitor` returns a 401 / Sandbox auth error        | `VERCEL_OIDC_TOKEN` expired (12h TTL). Re-run `vercel env pull`. |
+| `research_visitor` rejects a URL with "Private or reserved IP" / "Loopback" / "Only http/https" | The URL hit the SSRF guard in `validateVisitorUrl`. Expected for internal/loopback targets — ask the visitor for a public https URL instead. |
 | `supabase db reset` fails with port already in use           | Stop another local Supabase: `supabase stop`, or change ports in `supabase/config.toml`. |
 | `pnpm db:gen-types` produces an empty file                   | Local Supabase isn't running. Run `supabase start` first. |
 | Chat stream just hangs after sending a message               | Check the dev terminal — the workflow chunk likely threw before the first chunk reached the client. AI Gateway 401 (missing/invalid `AI_GATEWAY_API_KEY`) is the usual culprit. |

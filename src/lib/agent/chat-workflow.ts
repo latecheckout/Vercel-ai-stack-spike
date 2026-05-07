@@ -17,7 +17,6 @@ import { DurableAgent } from '@workflow/ai/agent'
 import { getWritable } from 'workflow'
 import { tool } from 'ai'
 import { z } from 'zod'
-import { Sandbox } from '@vercel/sandbox'
 import type { ModelMessage, UIMessageChunk } from 'ai'
 import { AGENT_INSTRUCTIONS } from './instructions'
 import { retrieveLcaKnowledge } from './tools/retrieve-lca-knowledge'
@@ -71,43 +70,33 @@ type ResearchResult = {
 async function fetchVisitorSite(url: string): Promise<ResearchResult> {
   'use step'
 
-  let sandbox: Sandbox | null = null
+  const validated = validateVisitorUrl(url)
+  if (!validated.ok) {
+    return { success: false, url, content: '', error: validated.reason }
+  }
+
   try {
-    sandbox = await Sandbox.create({
-      runtime: 'node24',
-      timeout: 45_000,
-      networkPolicy: 'allow-all',
-      resources: { vcpus: 1 },
+    const res = await fetch(validated.url, {
+      headers: {
+        'User-Agent': 'LCA-Research-Bot/1.0 (reading your site as requested in chat)',
+        Accept: 'text/html,application/xhtml+xml,*/*;q=0.9',
+      },
+      signal: AbortSignal.timeout(20_000),
+      redirect: 'follow',
     })
 
-    const script = buildFetchScript(url)
-    await sandbox.fs.writeFile('/tmp/fetch.mjs', script)
-
-    const cmd = await sandbox.runCommand({
-      cmd: 'node',
-      args: ['/tmp/fetch.mjs'],
-      detached: true,
-    })
-
-    let stdout = ''
-    let stderr = ''
-    for await (const log of cmd.logs()) {
-      if (log.stream === 'stdout') stdout += log.data
-      else stderr += log.data
-    }
-    const { exitCode } = await cmd.wait()
-
-    if (exitCode !== 0) {
+    if (!res.ok) {
       return {
         success: false,
         url,
         content: '',
-        error: `Fetch process exited ${exitCode}: ${stderr.slice(0, 500)}`,
+        error: `HTTP ${res.status} ${res.statusText}`,
       }
     }
 
-    const parsed = JSON.parse(stdout.trim()) as { text: string }
-    return { success: true, url, content: parsed.text, error: null }
+    const html = await res.text()
+    const text = stripHtml(html).slice(0, 6000)
+    return { success: true, url, content: text, error: null }
   } catch (err) {
     console.error('[research_visitor] failed', err)
     return {
@@ -116,8 +105,6 @@ async function fetchVisitorSite(url: string): Promise<ResearchResult> {
       content: '',
       error: err instanceof Error ? err.message : String(err),
     }
-  } finally {
-    if (sandbox) await sandbox.stop().catch(() => undefined)
   }
 }
 
@@ -147,7 +134,6 @@ function makeResearchVisitorTool() {
   return tool({
     description:
       'Fetch and analyse a public URL that the visitor has explicitly provided. ' +
-      'Runs in a secure sandbox. ' +
       'Before calling, tell the visitor: "Give me a sec — reading your site." ' +
       'Only call with URLs the visitor gave you. Public pages only.',
     inputSchema: z.object({
@@ -184,40 +170,79 @@ function makeSaveVisitorFactTool(sessionId: string) {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-function buildFetchScript(url: string): string {
-  const safeUrl = JSON.stringify(url)
-  return `
-const url = ${safeUrl}
+type UrlValidation = { ok: true; url: URL } | { ok: false; reason: string }
 
-try {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'LCA-Research-Bot/1.0 (reading your site as requested in chat)',
-      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-    },
-    signal: AbortSignal.timeout(20_000),
-    redirect: 'follow',
-  })
+// Visitor-supplied URLs are an SSRF surface. Block obvious internal targets
+// before we let the serverless function fetch them. Note: this does not
+// resolve DNS, so a domain that points at a private IP can still slip through
+// — acceptable for this spike, since Vercel functions don't sit on a VPC.
+function validateVisitorUrl(input: string): UrlValidation {
+  let url: URL
+  try {
+    url = new URL(input)
+  } catch {
+    return { ok: false, reason: 'Invalid URL' }
+  }
 
-  if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: 'Only http/https URLs are supported' }
+  }
 
-  const html = await res.text()
-  const text = html
-    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')
-    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')
-    .replace(/<noscript[\\s\\S]*?<\\/noscript>/gi, '')
-    .replace(/<!--[\\s\\S]*?-->/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&nbsp;/g, ' ')
-    .replace(/\\s+/g, ' ')
-    .trim()
-    .slice(0, 6000)
+  const host = url.hostname.toLowerCase()
+  if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.localhost')) {
+    return { ok: false, reason: 'Loopback hosts are not allowed' }
+  }
 
-  process.stdout.write(JSON.stringify({ text }) + '\\n')
-} catch (err) {
-  process.stderr.write(String(err) + '\\n')
-  process.exit(1)
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      a >= 224
+    ) {
+      return { ok: false, reason: 'Private or reserved IP ranges are not allowed' }
+    }
+  }
+
+  // URL hostnames wrap IPv6 literals in brackets — strip them before matching.
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const v6 = host.slice(1, -1)
+    if (
+      v6 === '::1' ||
+      v6 === '::' ||
+      v6.startsWith('fc') ||
+      v6.startsWith('fd') ||
+      v6.startsWith('fe8') ||
+      v6.startsWith('fe9') ||
+      v6.startsWith('fea') ||
+      v6.startsWith('feb')
+    ) {
+      return { ok: false, reason: 'Private or loopback IPv6 is not allowed' }
+    }
+  }
+
+  return { ok: true, url }
 }
-`
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }

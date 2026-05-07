@@ -11,7 +11,7 @@ Claude model, just stripping out the four Vercel pieces below.
 | **AI SDK v6** (`ai`, `@ai-sdk/react`) | `useChat` + `WorkflowChatTransport` in `src/components/chat-interface.tsx`; `tool()` + `convertToModelMessages` in `src/app/api/chat/route.ts` and `src/lib/agent/chat-workflow.ts` |
 | **Workflow DevKit** (`workflow`, `@workflow/ai`, `@workflow/next`) | `'use workflow'` + `'use step'` + `DurableAgent` in `src/lib/agent/chat-workflow.ts`; `start()` in `src/app/api/chat/route.ts`; resumable stream at `src/app/api/chat/[runId]/stream/route.ts` |
 | **AI Gateway** (`@ai-sdk/gateway`)    | Implicit — passing `'anthropic/claude-sonnet-4.5'` as a model string in `chat-workflow.ts` auto-routes through Gateway |
-| **Vercel Sandbox** (`@vercel/sandbox`)| `Sandbox.create({ runtime: 'node24', … })` inside `fetchVisitorSite` in `chat-workflow.ts` |
+| **Vercel Sandbox** (`@vercel/sandbox`)| **Evaluated then removed.** `fetchVisitorSite` originally ran inside a Firecracker microVM; we replaced it with a direct `fetch()` plus an SSRF allow-list (`validateVisitorUrl`) in the same step. See section 4 below for why. |
 
 ---
 
@@ -48,19 +48,22 @@ Claude model, just stripping out the four Vercel pieces below.
 | Failover across providers | `providerOptions.gateway.models: [...]` for cross-model fallback | We write the fallback ladder |
 | Spend / TTFT / token telemetry | Built in dashboard | Build it on top of provider responses |
 | Cost | Zero markup (BYOK or pooled credits) | Direct provider cost — same |
-| **Cost we now pay** | One more vendor in the request path; opaque routing; OIDC token expires every 12h locally (re-pull) | None |
+| **Cost we now pay** | One more vendor in the request path; opaque routing | None |
 
 **Verdict:** Cheap win for multi-provider apps. For a single-model spike like this one it's a wash — we're using it because it costs nothing to leave on, not because we needed it.
 
-### 4. Sandboxed code execution (Vercel Sandbox)
+### 4. Sandboxed code execution (Vercel Sandbox) — removed
 
-| | With Sandbox | Without |
+We started with `Sandbox.create({ runtime: 'node24', … })` inside `fetchVisitorSite`, then took it back out. Recording both shapes for posterity:
+
+| | With Sandbox (initial) | Without (current) |
 |---|---|---|
 | Use case here | Fetch a public URL the visitor pasted, strip HTML, return text | Same |
 | Implementation | Spin up Firecracker microVM, write `/tmp/fetch.mjs`, exec, stream logs, dispose (~80 LOC + ~$0.128/CPU-hr + Vercel-only region `iad1`) | `await fetch(url, …)` + the same regex strip, in-process (~30 LOC, free) |
+| SSRF protection | The microVM's network namespace is isolated from the function's | A small `validateVisitorUrl` allow-list (http/https only, blocks loopback / RFC1918 / link-local / IPv6 ULA + link-local) |
 | When it pays off | Running **LLM-emitted** code, untrusted user scripts, agent-driven shell commands | Doesn't apply — none of those here |
 
-**Verdict:** Overkill for this spike's actual workload. Justified the moment we let the agent write/run code; for fetching URLs it's defensive overhead. Worth keeping the `@vercel/sandbox` integration as a reference, but flag this as the one piece we wouldn't have reached for if we weren't deliberately exercising the stack.
+**Verdict:** Overkill for this spike's actual workload. The sandbox was buying network isolation against SSRF on visitor-supplied URLs; for a Vercel function (no VPC, no metadata service exposed) a literal-IP allow-list gets you most of that benefit at a fraction of the cost and complexity. Removed. Reach back for `@vercel/sandbox` the moment the agent starts executing code (LLM-emitted scripts, agent-driven shell commands) — that's the workload it was built for.
 
 ---
 
@@ -70,16 +73,16 @@ Claude model, just stripping out the four Vercel pieces below.
 2. **Resumable streams for free** — refresh-mid-response just works. Hard to replicate without owning a state store + reconnect endpoint.
 3. **Per-tool retries with idempotency** — `'use step'` gives you a retry budget per side-effect without a queue/worker stack.
 4. **Multi-provider routing as one env var** — Gateway means swapping Claude for GPT later is a string change.
-5. **Tight Vercel integration** — the same `vercel link` / `vercel env pull` flow gives us Gateway auth, OIDC for Sandbox, and Workflow's managed observability without setting up separate accounts.
+5. **Tight Vercel integration** — the same `vercel link` / `vercel env pull` flow gives us Gateway auth and Workflow's managed observability without setting up separate accounts.
 
 ## Net cons (new abstractions and footguns we now own)
 
 1. **Workflow determinism is load-bearing** — the workflow body can't do I/O, can't use `Math.random()`/`Date.now()` freely, and any side effect must be wrapped in a `'use step'` named function. Forgetting this fails silently or replays incorrectly.
 2. **Step colocation rule** — `'use step'` functions **must** live in the same file as their `'use workflow'`, and the directive **must** be the first statement of a *named* async function. Anonymous arrows inside `tool({ execute })` are silently skipped by the SWC transform. We learned this the hard way (see `AGENTS.md`); the failure mode is a runtime empty `FatalError` payload with no stack pointing at the cause.
 3. **Verifying "did my step actually register?"** is a `grep` against `.next/server/chunks/*.js` for `step//…` strings. Not great DX.
-4. **Vercel lock-in tightens** — Workflow's managed runtime, Sandbox's `iad1`-only region, Gateway routing, and OIDC tokens all compose well *on Vercel* and badly elsewhere. Self-hosting WDK is possible but loses the dashboard.
+4. **Vercel lock-in tightens** — Workflow's managed runtime and Gateway routing compose well *on Vercel* and badly elsewhere. Self-hosting WDK is possible but loses the dashboard.
 5. **Versioning churn** — AI SDK v6 broke the v5 API in many small ways (`convertToCoreMessages` → `convertToModelMessages` and now async, `generateObject` deprecated, default `stopWhen` jumped from 1 to 20, OpenAI `strict` defaults to `true`). DurableAgent lags ToolLoopAgent in feature parity. Expect to re-learn surface area each major.
-6. **Three new pricing meters** — Workflow steps, Sandbox CPU-hours + creations, Gateway credits. Still cheap at spike scale, worth a budget pass before going to production.
+6. **Two new pricing meters** — Workflow steps and Gateway credits. Still cheap at spike scale, worth a budget pass before going to production.
 
 ---
 
@@ -88,6 +91,6 @@ Claude model, just stripping out the four Vercel pieces below.
 - **Adopt now, by default:** AI SDK v6 (`useChat`, `tool()`, `convertToModelMessages`). High value, low lock-in, easy to back out.
 - **Adopt when warranted:** AI Gateway. One env var, zero markup — turn it on, leave it on.
 - **Adopt deliberately:** Workflow DevKit. Real wins for durability, but it changes how you write functions and adds a debugging layer. Reach for it when the use case is genuinely durable (long agents, scheduled work, human-in-the-loop). Do **not** introduce it just for "free retries" on a 5-second request.
-- **Adopt narrowly:** Vercel Sandbox. Use it the moment we let an agent execute code; otherwise prefer in-process `fetch()` for URL reads.
+- **Adopt narrowly:** Vercel Sandbox. We tried it for URL fetching and removed it (see section 4). Reach for it the moment we let an agent execute code; otherwise prefer in-process `fetch()` with an SSRF allow-list.
 
 The stack is a real accelerant for AI-feature work — the pieces fit together cleanly and the savings on streaming/tooling alone justify the AI SDK. The risk we're taking on is mostly with WDK: the directive-based programming model is powerful but its silent failure modes and tight Vercel coupling mean we should adopt it project-by-project, not as a default.
