@@ -39,24 +39,30 @@ export type Database = {
           category: string
           content: string
           created_at: string
-          embedding: string | null
           id: string
+          search_vector: unknown
+          source_url: string | null
+          tags: string[]
           title: string
         }
         Insert: {
           category: string
           content: string
           created_at?: string
-          embedding?: string | null
           id?: string
+          search_vector?: unknown
+          source_url?: string | null
+          tags?: string[]
           title: string
         }
         Update: {
           category?: string
           content?: string
           created_at?: string
-          embedding?: string | null
           id?: string
+          search_vector?: unknown
+          source_url?: string | null
+          tags?: string[]
           title?: string
         }
         Relationships: []
@@ -154,7 +160,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      search_lca_knowledge: {
+        Args: { max_results?: number; q: string }
+        Returns: {
+          category: string
+          content: string
+          id: string
+          rank: number
+          source_url: string
+          tags: string[]
+          title: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

@@ -19,12 +19,15 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ModelMessage, UIMessageChunk } from 'ai'
 import { AGENT_INSTRUCTIONS } from './instructions'
-import { retrieveLcaKnowledge } from './tools/retrieve-lca-knowledge'
 import { saveMessage } from '../db/queries/messages'
 import {
   saveVisitorFact as dbSaveVisitorFact,
   type VisitorFactCategory,
 } from '../db/queries/visitor-facts'
+import {
+  searchLcaKnowledge as dbSearchLcaKnowledge,
+  type LcaKnowledgeHit,
+} from '../db/queries/lca-knowledge'
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
 
@@ -37,7 +40,7 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
     model: 'anthropic/claude-sonnet-4.5',
     instructions: AGENT_INSTRUCTIONS,
     tools: {
-      retrieve_lca_knowledge: retrieveLcaKnowledge,
+      retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
       research_visitor: makeResearchVisitorTool(),
       save_visitor_fact: makeSaveVisitorFactTool(chatId),
     },
@@ -128,7 +131,53 @@ async function persistVisitorFact(
   }
 }
 
+async function searchLcaKnowledgeStep(query: string): Promise<LcaKnowledgeHit[]> {
+  'use step'
+
+  try {
+    return await dbSearchLcaKnowledge(query, 3)
+  } catch (err) {
+    console.error('[retrieve_lca_knowledge] failed', err)
+    return []
+  }
+}
+
 // ─── Tool wrappers (NOT steps) ─────────────────────────────────────────────
+
+function makeRetrieveLcaKnowledgeTool() {
+  return tool({
+    description:
+      'Search the curated LCA knowledge base for approved content about services, ' +
+      'case studies, approach, hiring, and capabilities. ' +
+      'Always call this before making any factual statement about LCA.',
+    inputSchema: z.object({
+      query: z.string().describe('Natural-language question or topic to look up'),
+    }),
+    execute: async ({ query }) => {
+      const results = await searchLcaKnowledgeStep(query)
+
+      if (results.length === 0) {
+        return {
+          found: false,
+          results: [] as never[],
+          note: 'No matching content found. Do not invent details — tell the visitor to email anthony@latecheckout.studio.',
+        }
+      }
+
+      return {
+        found: true,
+        results: results.map((item) => ({
+          id: item.id,
+          title: item.title,
+          category: item.category,
+          content: item.content,
+          source_url: item.source_url,
+        })),
+        note: undefined as string | undefined,
+      }
+    },
+  })
+}
 
 function makeResearchVisitorTool() {
   return tool({
