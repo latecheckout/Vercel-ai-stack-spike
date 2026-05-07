@@ -1,6 +1,14 @@
 'use client'
 
-import { X, Building2, User, Globe, Briefcase, Tag } from 'lucide-react'
+import {
+  X,
+  Building2,
+  User,
+  Globe,
+  Briefcase,
+  Tag,
+  TriangleAlert,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -21,11 +29,22 @@ const CATEGORY_META: Record<
 
 interface VisitorFactsPanelProps {
   sessionId: string | null
+  onFactDeleted?: (factId: string) => void
 }
 
-export function VisitorFactsPanel({ sessionId }: VisitorFactsPanelProps) {
+export function VisitorFactsPanel({ sessionId, onFactDeleted }: VisitorFactsPanelProps) {
   const { data: facts = [], isLoading } = useVisitorFacts(sessionId)
   const deleteMutation = useDeleteVisitorFact(sessionId)
+
+  const handleDelete = async (factId: string) => {
+    try {
+      await deleteMutation.mutateAsync(factId)
+      onFactDeleted?.(factId)
+    } catch {
+      // Mutation handles rollback (panel card reappears via React Query
+      // cache restore in onError); intentionally no chat scrub on failure.
+    }
+  }
 
   return (
     <div className="flex h-full flex-col border-l bg-muted/30">
@@ -54,6 +73,17 @@ export function VisitorFactsPanel({ sessionId }: VisitorFactsPanelProps) {
             </div>
           )}
 
+          {!isLoading && facts.length > 0 && (
+            <div className="flex gap-2 rounded-lg border border-yellow-400 bg-yellow-300 p-2.5 text-black">
+              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <p className="text-[11px] leading-snug">
+                Removing a fact may not fully erase it from this conversation —
+                the model can still see your earlier messages. Refresh the page
+                to start a clean session.
+              </p>
+            </div>
+          )}
+
           {facts.map((fact) => {
             const meta = CATEGORY_META[fact.category]
             return (
@@ -61,7 +91,7 @@ export function VisitorFactsPanel({ sessionId }: VisitorFactsPanelProps) {
                 key={fact.id}
                 fact={fact}
                 meta={meta}
-                onDelete={() => deleteMutation.mutate(fact.id)}
+                onDelete={() => handleDelete(fact.id)}
                 isDeleting={deleteMutation.isPending}
               />
             )

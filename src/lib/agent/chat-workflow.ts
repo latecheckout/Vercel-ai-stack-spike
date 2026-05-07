@@ -22,6 +22,8 @@ import { AGENT_INSTRUCTIONS } from './instructions'
 import { saveMessage } from '../db/queries/messages'
 import {
   saveVisitorFact as dbSaveVisitorFact,
+  getVisitorFacts as dbGetVisitorFacts,
+  type VisitorFact,
   type VisitorFactCategory,
 } from '../db/queries/visitor-facts'
 import {
@@ -36,9 +38,15 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
 
   const writable = getWritable<UIMessageChunk>()
 
+  // Reload the current facts every turn. The visitor can delete facts from
+  // the panel; without this, the model would keep referencing them because
+  // the `save_visitor_fact` tool calls and their results still live in the
+  // conversation history.
+  const currentFacts = await loadVisitorFacts(chatId)
+
   const agent = new DurableAgent({
     model: 'anthropic/claude-sonnet-4.5',
-    instructions: AGENT_INSTRUCTIONS,
+    instructions: buildInstructions(currentFacts),
     tools: {
       retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
       research_visitor: makeResearchVisitorTool(),
@@ -56,11 +64,42 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
   })
 }
 
+function buildInstructions(facts: VisitorFact[]): string {
+  const factsBlock =
+    facts.length === 0
+      ? 'No visitor facts saved yet.'
+      : facts
+          .map((f) => `- [${f.category}] ${f.fact} (source: ${f.source})`)
+          .join('\n')
+
+  return `${AGENT_INSTRUCTIONS}
+
+## Visitor facts — current source of truth
+
+This list is the authoritative state right now. The visitor can remove facts
+from their panel at any time, so prior \`save_visitor_fact\` results in the
+conversation history may be out of date. If a fact appeared in earlier tool
+output but is NOT in the list below, the visitor has removed it — do not
+reference it, and do not re-save it unless the visitor restates it.
+
+${factsBlock}`
+}
+
 // ─── Steps ─────────────────────────────────────────────────────────────────
 
 async function persistAssistantMessage(chatId: string, text: string) {
   'use step'
   await saveMessage(chatId, 'assistant', text).catch(() => undefined)
+}
+
+async function loadVisitorFacts(sessionId: string): Promise<VisitorFact[]> {
+  'use step'
+  try {
+    return await dbGetVisitorFacts(sessionId)
+  } catch (err) {
+    console.error('[loadVisitorFacts] failed', err)
+    return []
+  }
 }
 
 type ResearchResult = {

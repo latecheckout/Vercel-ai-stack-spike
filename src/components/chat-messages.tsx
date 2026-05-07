@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
 import { Loader2, Search, BookOpen, Database } from 'lucide-react'
+import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 
 // Tool call display metadata
@@ -76,17 +77,11 @@ function MessageBubble({ message }: { message: UIMessage }) {
                 className={cn(
                   'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
                   isUser
-                    ? 'bg-primary text-primary-foreground rounded-br-sm'
+                    ? 'bg-primary text-primary-foreground rounded-br-sm whitespace-pre-wrap'
                     : 'bg-muted rounded-bl-sm',
                 )}
               >
-                {/* Simple newline → <br> rendering */}
-                {part.text.split('\n').map((line, j) => (
-                  <span key={j}>
-                    {j > 0 && <br />}
-                    {line}
-                  </span>
-                ))}
+                {isUser ? part.text : <Streamdown>{part.text}</Streamdown>}
               </div>
             )
           }

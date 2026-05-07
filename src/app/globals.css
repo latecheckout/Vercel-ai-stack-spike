@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Streamdown ships its component styles as Tailwind utility classes — point
+ * Tailwind v4's content scanner at its dist so the classes survive the build. */
+@source "../../node_modules/streamdown/dist/*.js";
+
 /* ── Design tokens (neutral palette — no LCA brand in the spike) ── */
 @theme {
   --color-background: oklch(0.99 0 0);

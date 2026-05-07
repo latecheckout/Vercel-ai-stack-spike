@@ -3,7 +3,7 @@
 import { useChat } from '@ai-sdk/react'
 import { WorkflowChatTransport } from '@workflow/ai'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
@@ -88,7 +88,7 @@ function ChatInterfaceInner() {
     [],
   )
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, setMessages, status } = useChat({
     // id becomes the chatId sent by WorkflowChatTransport
     id: sessionId ?? undefined,
     transport,
@@ -105,6 +105,38 @@ function ChatInterfaceInner() {
     sendMessage({ text: input })
     setInput('')
   }
+
+  // When the visitor deletes a fact from the panel, scrub the matching
+  // `save_visitor_fact` tool result from useChat's message state. Without
+  // this, convertToModelMessages on the next turn would still hand the model
+  // the original structured tool call, and it would keep referencing the
+  // deleted fact. The system prompt also reloads facts every turn — that's
+  // the backstop for any assistant prose that mentioned the fact.
+  const handleFactDeleted = useCallback(
+    (factId: string) => {
+      setMessages((prev) =>
+        prev
+          .map((msg) => ({
+            ...msg,
+            parts: msg.parts.filter((part) => {
+              if (part.type !== 'tool-save_visitor_fact') return true
+              if (
+                'output' in part &&
+                part.output &&
+                typeof part.output === 'object' &&
+                'id' in part.output &&
+                (part.output as { id?: unknown }).id === factId
+              ) {
+                return false
+              }
+              return true
+            }),
+          }))
+          .filter((msg) => msg.parts.length > 0),
+      )
+    },
+    [setMessages],
+  )
 
   return (
     <div className="flex h-full">
@@ -124,7 +156,7 @@ function ChatInterfaceInner() {
 
       {/* Visitor facts sidebar */}
       <div className="hidden w-72 shrink-0 lg:flex lg:flex-col">
-        <VisitorFactsPanel sessionId={sessionId} />
+        <VisitorFactsPanel sessionId={sessionId} onFactDeleted={handleFactDeleted} />
       </div>
     </div>
   )
