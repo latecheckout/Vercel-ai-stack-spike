@@ -16,15 +16,19 @@ const TOOL_META: Record<string, { label: string; Icon: React.ComponentType<{ cla
 interface ChatMessagesProps {
   messages: UIMessage[]
   isStreaming: boolean
+  /** Optional inline element rendered after the last message — used for the
+   *  end-of-conversation email capture card so it scrolls with the chat. */
+  footer?: React.ReactNode
 }
 
-export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
+export function ChatMessages({ messages, isStreaming, footer }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll to bottom as messages arrive
+  // Auto-scroll to bottom as messages arrive — and when the footer slot
+  // appears, so the email-capture card lands in view.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isStreaming])
+  }, [messages, isStreaming, footer])
 
   if (messages.length === 0) {
     return (
@@ -51,6 +55,8 @@ export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
           <span>LCA is thinking…</span>
         </div>
       )}
+
+      {footer}
 
       <div ref={bottomRef} />
     </div>

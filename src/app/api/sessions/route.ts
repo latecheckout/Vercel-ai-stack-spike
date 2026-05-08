@@ -1,4 +1,5 @@
 import { upsertSession } from '@/lib/db/queries/sessions'
+import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 
 /**
@@ -6,7 +7,9 @@ import { NextResponse } from 'next/server'
  * Body: { sessionId: string }
  *
  * Ensures the session row exists in Supabase. Called by the client when the
- * app loads (before the first chat message).
+ * app loads (before the first chat message). The auth user id is read
+ * server-side from the Supabase auth cookie (the visitor signs in
+ * anonymously on mount) and stored on the session row.
  */
 export async function POST(req: Request) {
   try {
@@ -16,7 +19,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
     }
 
-    const session = await upsertSession(sessionId)
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    const session = await upsertSession(sessionId, user?.id ?? null)
     return NextResponse.json({ session })
   } catch (err) {
     // Surface real DB / Supabase errors in the dev terminal — the previous

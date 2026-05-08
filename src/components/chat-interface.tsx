@@ -3,10 +3,11 @@
 import { useChat } from '@ai-sdk/react'
 import { WorkflowChatTransport } from '@workflow/ai'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
+import { EmailCaptureCard } from '@/components/email-capture-card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatSession } from '@/hooks/use-chat-session'
 
@@ -46,6 +47,17 @@ export function ChatInterface() {
 }
 
 const RUN_ID_KEY = 'lca_chatbot_active_run_id'
+
+// Time of inactivity (in ms) after which the email-capture card pops up.
+// Picked at 5 minutes per the product brief; drop this to ~60s locally
+// when you're iterating on the card UX.
+const EMAIL_CAPTURE_IDLE_MS = 5 * 60 * 1000
+
+// Minimum messages before we even consider showing the card — we want at
+// least one back-and-forth so the recap has substance.
+const EMAIL_CAPTURE_MIN_MESSAGES = 2
+
+type CaptureState = 'hidden' | 'shown' | 'submitted' | 'dismissed'
 
 function ChatInterfaceInner() {
   const sessionId = useChatSession()
@@ -100,6 +112,53 @@ function ChatInterfaceInner() {
 
   const isStreaming = status === 'streaming' || status === 'submitted'
 
+  // ─── Email-capture inactivity detection ─────────────────────────────────
+  //
+  // After EMAIL_CAPTURE_IDLE_MS without a new message (and once we have a
+  // real conversation going), surface the recap+CTA card. Once the visitor
+  // submits, dismisses, or sends a new message, we don't pop it again for
+  // the rest of the session — re-prompting feels naggy.
+  const [captureState, setCaptureState] = useState<CaptureState>('hidden')
+  const messageCount = messages.length
+
+  // Detect "new message arrived while card was shown" by comparing the
+  // current message count to whatever we last saw. We can't fold this into
+  // the timer effect: that one has captureState in its deps, and a transition
+  // hidden → shown would re-run it and instantly dismiss the freshly-opened
+  // card before the user ever sees it.
+  const prevMessageCountRef = useRef(messageCount)
+  useEffect(() => {
+    const prev = prevMessageCountRef.current
+    prevMessageCountRef.current = messageCount
+    if (captureState === 'shown' && messageCount > prev) {
+      setCaptureState('dismissed')
+    }
+  }, [messageCount, captureState])
+
+  useEffect(() => {
+    if (
+      captureState !== 'hidden' ||
+      messageCount < EMAIL_CAPTURE_MIN_MESSAGES ||
+      isStreaming
+    ) {
+      return
+    }
+
+    const timer = setTimeout(() => {
+      setCaptureState('shown')
+    }, EMAIL_CAPTURE_IDLE_MS)
+
+    return () => clearTimeout(timer)
+  }, [messageCount, isStreaming, captureState])
+
+  const handleEmailSubmitted = useCallback(() => {
+    setCaptureState('submitted')
+  }, [])
+
+  const handleEmailDismissed = useCallback(() => {
+    setCaptureState('dismissed')
+  }, [])
+
   const handleSubmit = () => {
     if (!input.trim() || isStreaming || !sessionId) return
     sendMessage({ text: input })
@@ -138,12 +197,26 @@ function ChatInterfaceInner() {
     [setMessages],
   )
 
+  const showCapture = captureState === 'shown' || captureState === 'submitted'
+
   return (
     <div className="flex h-full">
       {/* Chat column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <ScrollArea className="flex-1">
-          <ChatMessages messages={messages} isStreaming={isStreaming} />
+          <ChatMessages
+            messages={messages}
+            isStreaming={isStreaming}
+            footer={
+              showCapture && sessionId ? (
+                <EmailCaptureCard
+                  sessionId={sessionId}
+                  onSubmitted={handleEmailSubmitted}
+                  onDismiss={handleEmailDismissed}
+                />
+              ) : null
+            }
+          />
         </ScrollArea>
 
         <ChatInput

@@ -34,6 +34,41 @@ export type Database = {
   }
   public: {
     Tables: {
+      email_captures: {
+        Row: {
+          created_at: string
+          email: string
+          id: string
+          session_id: string
+          summary: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          id?: string
+          session_id: string
+          summary: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          id?: string
+          session_id?: string
+          summary?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_captures_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       lca_knowledge: {
         Row: {
           category: string
@@ -105,18 +140,21 @@ export type Database = {
           id: string
           metadata: Json
           updated_at: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
           id: string
           metadata?: Json
           updated_at?: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
           id?: string
           metadata?: Json
           updated_at?: string
+          user_id?: string | null
         }
         Relationships: []
       }

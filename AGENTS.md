@@ -10,8 +10,15 @@ Workflow DevKit) on a real-feeling agent problem — a two-way learning chatbot
 for LCA (Late Checkout), an AI engineering studio. Vercel Sandbox was evaluated
 for the `research_visitor` tool and removed — see `pros-and-cons.md`.
 
-**What it is not:** Production. Not embedded in lca.agency. No auth. No analytics.
+**What it is not:** Production. Not embedded in lca.agency. No analytics.
 This is a time-boxed learning exercise.
+
+**Auth model:** Every visitor is signed in via Supabase **anonymous auth**
+(`supabase.auth.signInAnonymously()`) on first page load — that gives them a
+real `auth.users` row with `is_anonymous = true`. The chat session id (used
+by WorkflowChatTransport, `sessions.id`, and the FK on `messages` /
+`visitor_facts` / `email_captures`) is the auth user id. RLS is still open
+to anon + authenticated for the spike — see "Conventions" below.
 
 ## Stack
 
@@ -65,7 +72,25 @@ This is a time-boxed learning exercise.
   Migrations are **generated** via `supabase db diff -f <name>`; never hand-written.
   After any schema change run `pnpm db:gen-types` to refresh `src/lib/database.types.ts`.
 - **RLS:** Always 4 separate policies per table (select / insert / update / delete) with
-  `to anon, authenticated`. Never use `for all`.
+  `to anon, authenticated`. Never use `for all`. The spike currently uses
+  permissive `using (true)` predicates so the workflow step worker — which
+  runs without the visitor's auth cookies — can still read/write. When we
+  tighten this we'll need to thread a server-trusted user id into every step
+  call rather than relying on `auth.uid()`.
+- **Auth (anonymous):** `useChatSession` (`src/hooks/use-chat-session.ts`)
+  calls `supabase.auth.signInAnonymously()` on mount and returns
+  `auth.user.id` as the chat session id. `src/proxy.ts` (Next.js 16's
+  middleware-equivalent) calls `getUser()` on every request to refresh the
+  auth cookie. Anonymous sign-ins must be enabled in
+  `supabase/config.toml` (`enable_anonymous_sign_ins = true`) and in the
+  Supabase dashboard for any deployed environment.
+- **Email capture:** After ~5 minutes of chat inactivity (and at least one
+  back-and-forth), `chat-interface.tsx` renders an inline
+  `<EmailCaptureCard>` styled like an assistant bubble. Submit posts to
+  `/api/email-capture`, which loads the transcript, summarises it via
+  `generateText` against the AI Gateway, and writes a row to
+  `email_captures`. The CTA link is intentionally a placeholder
+  (latecheckout.agency) — swap it for the real sign-up URL once one exists.
 - **Knowledge base:** The agent may ONLY state facts about LCA that it retrieves via
   `retrieve_lca_knowledge`. Curated content lives in the `public.lca_knowledge` table
   and is searched via Postgres full-text search (`search_lca_knowledge(q, k)` SQL
@@ -77,9 +102,11 @@ This is a time-boxed learning exercise.
 
 ```
 src/
+  proxy.ts                     ← Next.js 16 proxy (refreshes Supabase auth cookie)
   app/
     api/chat/route.ts          ← DurableAgent endpoint ('use workflow')
-    api/sessions/route.ts      ← session init
+    api/sessions/route.ts      ← session init (writes user_id from auth)
+    api/email-capture/route.ts ← idle-timeout email capture + LLM-summary
     api/visitor-facts/[id]/    ← facts CRUD
   lib/
     agent/
@@ -89,11 +116,15 @@ src/
       client.ts                ← @supabase/ssr browser client (Client Components)
       server.ts                ← @supabase/ssr server client — anon, RLS-enforced
       admin.ts                 ← service-role client (admin routes only)
+      proxy.ts                 ← cookie-refresh helper used by src/proxy.ts
     db/queries/                ← all Supabase access (imports lib/supabase/server)
     database.types.ts          ← generated; run `pnpm db:gen-types` after schema change
+  hooks/
+    use-chat-session.ts        ← anonymous sign-in + session-id source of truth
   types/database.ts            ← thin re-export of generated helpers
   components/
     chat-interface.tsx         ← root client component, WorkflowChatTransport
+    email-capture-card.tsx     ← end-of-conversation email capture + sign-up CTA
     visitor-facts-panel.tsx    ← the "What LCA knows" panel
 supabase/
   config.toml                  ← supabase CLI config (schema_paths → ./schemas/*.sql)
@@ -153,7 +184,8 @@ pnpm build              # must pass (catches route/export issues)
 
 ## Do not
 
-- Add auth, multi-tenant logic, or CRM write-backs — explicitly out of scope.
+- Add multi-tenant logic or CRM write-backs — explicitly out of scope.
+  (Auth was added — anonymous-only; do not promote to email/OAuth here.)
 - Embed this in lca.agency — standalone only.
 - Let the agent invent LCA facts — it must call `retrieve_lca_knowledge`.
 - Commit `.env.local` or any real API keys.
@@ -164,5 +196,12 @@ pnpm build              # must pass (catches route/export issues)
 Copy `.env.local.example` to `.env.local` and fill in:
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway API key
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY`
+- `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — when unset, the
+  email-capture endpoint logs a warning and skips the send so local dev
+  works without a Resend account. The full LCA Resend pipeline (PGMQ →
+  cron → edge function) is **not** mirrored here on purpose: this spike
+  calls Resend directly via `fetch` from `/api/email-capture` with the
+  key in the server-only env. Don't replicate that direct-fetch pattern
+  in the LCA monorepo.
 - For Workflow DevKit local dev: the Next dev server runs the executor in-process
   via the `withWorkflow()` SWC plugin; no separate `npx workflow dev` needed.

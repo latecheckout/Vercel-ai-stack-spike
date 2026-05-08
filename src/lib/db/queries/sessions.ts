@@ -7,18 +7,23 @@ export type Session = Tables<'sessions'>
  * Upsert a session row. Called when the chat initialises so that every
  * session_id that the agent references actually exists in the DB.
  *
+ * `userId` (optional) is the auth user id read from `supabase.auth.getUser()`
+ * by the caller — typically the API route. We store it on the session so
+ * future analytics / migrations to per-user RLS can join on it without
+ * trusting the client to round-trip the id.
+ *
  * Uses default `ignoreDuplicates: false` semantics — on conflict it
- * performs an UPDATE that sets only the columns provided (just `id`,
- * a no-op for the existing row) and returns it. `ignoreDuplicates: true`
- * would translate to `ON CONFLICT DO NOTHING`, which returns 0 rows and
- * makes `.single()` throw on every re-init of an existing session.
+ * performs an UPDATE that sets the columns provided and returns the row.
  */
-export async function upsertSession(sessionId: string): Promise<Session> {
+export async function upsertSession(
+  sessionId: string,
+  userId?: string | null,
+): Promise<Session> {
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('sessions')
-    .upsert({ id: sessionId }, { onConflict: 'id' })
+    .upsert({ id: sessionId, user_id: userId ?? null }, { onConflict: 'id' })
     .select()
     .single()
 
