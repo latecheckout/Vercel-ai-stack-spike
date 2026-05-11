@@ -19,7 +19,13 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ModelMessage, UIMessageChunk } from 'ai'
 import { AGENT_INSTRUCTIONS } from './instructions'
+import { extendSummary } from './summary'
 import { saveMessage } from '../db/queries/messages'
+import {
+  getSession,
+  updateSessionSummary,
+  type SessionMode,
+} from '../db/queries/sessions'
 import {
   saveVisitorFact as dbSaveVisitorFact,
   getVisitorFacts as dbGetVisitorFacts,
@@ -31,6 +37,11 @@ import {
   type LcaKnowledgeHit,
 } from '../db/queries/lca-knowledge'
 
+interface SessionRuntimeState {
+  mode: SessionMode
+  summary: string
+}
+
 // ─── Workflow ──────────────────────────────────────────────────────────────
 
 export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) {
@@ -38,15 +49,29 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
 
   const writable = getWritable<UIMessageChunk>()
 
-  // Reload the current facts every turn. The visitor can delete facts from
-  // the panel; without this, the model would keep referencing them because
-  // the `save_visitor_fact` tool calls and their results still live in the
-  // conversation history.
-  const currentFacts = await loadVisitorFacts(chatId)
+  // Load mode/summary and facts upfront. Both fan out to the DB; running
+  // them in parallel keeps the time-to-first-token down.
+  const [sessionState, currentFacts] = await Promise.all([
+    loadSessionState(chatId),
+    loadVisitorFacts(chatId),
+  ])
+
+  const isSummaryMode = sessionState.mode === 'summary'
+  const latestUserText = extractLastUserText(messages)
+
+  // In summary mode we strip everything but the latest user turn. The model
+  // gets its "memory" from the summary block in the system prompt — sending
+  // the rest of `messages` would defeat the entire point of the mode.
+  const messagesForModel: ModelMessage[] = isSummaryMode
+    ? buildSummaryModeMessages(latestUserText)
+    : messages
 
   const agent = new DurableAgent({
     model: 'anthropic/claude-sonnet-4.5',
-    instructions: buildInstructions(currentFacts),
+    instructions: buildInstructions({
+      facts: currentFacts,
+      summary: isSummaryMode ? sessionState.summary : null,
+    }),
     tools: {
       retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
       research_visitor: makeResearchVisitorTool(),
@@ -54,23 +79,52 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
     },
     onFinish: async ({ text }) => {
       await persistAssistantMessage(chatId, text)
+      if (isSummaryMode && latestUserText.length > 0 && text.length > 0) {
+        await extendSummaryStep(
+          chatId,
+          sessionState.summary,
+          latestUserText,
+          text,
+        )
+      }
     },
   })
 
   await agent.stream({
-    messages,
+    messages: messagesForModel,
     writable,
     maxSteps: 12,
   })
 }
 
-function buildInstructions(facts: VisitorFact[]): string {
+function buildInstructions(input: {
+  facts: VisitorFact[]
+  summary: string | null
+}): string {
   const factsBlock =
-    facts.length === 0
+    input.facts.length === 0
       ? 'No visitor facts saved yet.'
-      : facts
+      : input.facts
           .map((f) => `- [${f.category}] ${f.fact} (source: ${f.source})`)
           .join('\n')
+
+  const summaryBlock =
+    input.summary === null
+      ? ''
+      : `
+
+## Rolling conversation summary (summary mode)
+
+You are operating in *summary mode*: the visitor's earlier messages are
+NOT in the prompt this turn. Treat the summary below as the entirety of
+the prior conversation. If something is not in the summary or the
+visitor facts list, it did not happen — do not pretend to remember it.
+
+${
+  input.summary.trim().length === 0
+    ? '(No prior summary yet — this is the first turn.)'
+    : input.summary
+}`
 
   return `${AGENT_INSTRUCTIONS}
 
@@ -82,7 +136,31 @@ conversation history may be out of date. If a fact appeared in earlier tool
 output but is NOT in the list below, the visitor has removed it — do not
 reference it, and do not re-save it unless the visitor restates it.
 
-${factsBlock}`
+${factsBlock}${summaryBlock}`
+}
+
+// ─── Pure helpers (not steps) ──────────────────────────────────────────────
+
+function extractLastUserText(messages: ModelMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role !== 'user') continue
+    if (typeof m.content === 'string') return m.content
+    return m.content
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .join('')
+      .trim()
+  }
+  return ''
+}
+
+function buildSummaryModeMessages(userText: string): ModelMessage[] {
+  // Empty array would make agent.stream a no-op; fall back to a placeholder
+  // so the agent has something to react to. Practically `latestUserText`
+  // is always populated because the route only invokes the workflow on
+  // POST with a user message.
+  const text = userText.length > 0 ? userText : '(empty message)'
+  return [{ role: 'user', content: text }]
 }
 
 // ─── Steps ─────────────────────────────────────────────────────────────────
@@ -99,6 +177,44 @@ async function loadVisitorFacts(sessionId: string): Promise<VisitorFact[]> {
   } catch (err) {
     console.error('[loadVisitorFacts] failed', err)
     return []
+  }
+}
+
+async function loadSessionState(sessionId: string): Promise<SessionRuntimeState> {
+  'use step'
+  try {
+    const session = await getSession(sessionId)
+    if (!session) return { mode: 'chat', summary: '' }
+    return { mode: session.mode, summary: session.summary }
+  } catch (err) {
+    console.error('[loadSessionState] failed', err)
+    return { mode: 'chat', summary: '' }
+  }
+}
+
+async function extendSummaryStep(
+  sessionId: string,
+  previousSummary: string,
+  userMessage: string,
+  assistantMessage: string,
+) {
+  'use step'
+  try {
+    // Refetch facts here rather than passing them in: by the time this
+    // runs (post-stream), the visitor may have just deleted one — using
+    // the up-to-date list keeps the summary aligned with the panel.
+    const facts = await dbGetVisitorFacts(sessionId)
+    const updated = await extendSummary({
+      previousSummary,
+      userMessage,
+      assistantMessage,
+      facts,
+    })
+    if (updated.length > 0) {
+      await updateSessionSummary(sessionId, updated)
+    }
+  } catch (err) {
+    console.error('[extendSummaryStep] failed', err)
   }
 }
 

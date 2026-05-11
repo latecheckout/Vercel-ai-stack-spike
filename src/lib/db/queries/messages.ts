@@ -35,3 +35,21 @@ export async function getMessages(sessionId: string): Promise<DbMessage[]> {
   if (error) throw new Error(`Failed to get messages: ${error.message}`)
   return (data ?? []) as DbMessage[]
 }
+
+/**
+ * Wipe the transcript for a session. Used by the Mode 1 confirm-and-reset
+ * flow when a visitor deletes a fact — without this, a refresh would pull
+ * the stale messages back into useChat via /api/messages-style replay (the
+ * spike doesn't replay yet, but the row would still be visible in DB
+ * inspection and would surprise anyone wiring replay up later).
+ */
+export async function clearMessages(sessionId: string): Promise<void> {
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from('messages')
+    .delete()
+    .eq('session_id', sessionId)
+
+  if (error) throw new Error(`Failed to clear messages: ${error.message}`)
+}
