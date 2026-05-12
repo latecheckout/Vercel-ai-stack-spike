@@ -1,7 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import type { Tables } from '@/types/database'
 
-export type Session = Tables<'sessions'>
+// `mode` lands as `string` in the generated types (CHECK constraint, not a
+// true Postgres enum). Narrow it here so the app layer gets the union.
+export type SessionMode = 'chat' | 'summary'
+export type Session = Omit<Tables<'sessions'>, 'mode'> & { mode: SessionMode }
 
 /**
  * Upsert a session row. Called when the chat initialises so that every
@@ -14,6 +17,8 @@ export type Session = Tables<'sessions'>
  *
  * Uses default `ignoreDuplicates: false` semantics — on conflict it
  * performs an UPDATE that sets the columns provided and returns the row.
+ * `mode` and `summary` are not in the upsert payload so an existing
+ * session's choice survives a re-init.
  */
 export async function upsertSession(
   sessionId: string,
@@ -28,7 +33,7 @@ export async function upsertSession(
     .single()
 
   if (error) throw new Error(`Failed to upsert session: ${error.message}`)
-  return data
+  return data as Session
 }
 
 /**
@@ -45,5 +50,50 @@ export async function getSession(sessionId: string): Promise<Session | null> {
 
   if (error && error.code === 'PGRST116') return null
   if (error) throw new Error(`Failed to get session: ${error.message}`)
-  return data
+  return data as Session
+}
+
+/**
+ * Switch the conversation mode. The workflow reads this each turn to decide
+ * whether to send the full history (`chat`) or the rolling summary
+ * (`summary`).
+ */
+export async function updateSessionMode(
+  sessionId: string,
+  mode: SessionMode,
+): Promise<Session> {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from('sessions')
+    .update({ mode, updated_at: new Date().toISOString() })
+    .eq('id', sessionId)
+    .select()
+    .single()
+
+  if (error) throw new Error(`Failed to update session mode: ${error.message}`)
+  return data as Session
+}
+
+/**
+ * Replace the rolling summary. Called from the post-turn workflow step in
+ * summary mode and from the regenerate-summary endpoint after a fact
+ * deletion.
+ */
+export async function updateSessionSummary(
+  sessionId: string,
+  summary: string,
+): Promise<Session> {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from('sessions')
+    .update({ summary, updated_at: new Date().toISOString() })
+    .eq('id', sessionId)
+    .select()
+    .single()
+
+  if (error)
+    throw new Error(`Failed to update session summary: ${error.message}`)
+  return data as Session
 }

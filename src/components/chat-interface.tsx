@@ -197,6 +197,16 @@ function ChatInterfaceInner() {
     [setMessages],
   )
 
+  // Chat-mode confirm-and-reset path: by the time this fires, the server
+  // has already cleared `messages` + `summary` for the session. We just
+  // need to drop the local useChat state so the visitor sees the empty
+  // chat surface — preserves the visitor_facts list (only one fact was
+  // removed) and re-opens the conversation from a clean slate.
+  const handleConversationReset = useCallback(() => {
+    setMessages([])
+    localStorage.removeItem(RUN_ID_KEY)
+  }, [setMessages])
+
   const showCapture = captureState === 'shown' || captureState === 'submitted'
 
   return (
@@ -229,7 +239,11 @@ function ChatInterfaceInner() {
 
       {/* Visitor facts sidebar */}
       <div className="hidden w-72 shrink-0 lg:flex lg:flex-col">
-        <VisitorFactsPanel sessionId={sessionId} onFactDeleted={handleFactDeleted} />
+        <VisitorFactsPanel
+          sessionId={sessionId}
+          onFactDeleted={handleFactDeleted}
+          onConversationReset={handleConversationReset}
+        />
       </div>
     </div>
   )

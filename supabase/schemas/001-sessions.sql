@@ -4,6 +4,16 @@
 create table public.sessions (
   id          uuid        primary key,
   user_id     uuid        references auth.users (id) on delete set null,
+  -- Conversation mode the visitor has selected for this session.
+  --   chat    — original behavior; full message history is sent to the model
+  --             every turn. Deleting a fact resets the conversation.
+  --   summary — only the latest user message is sent; the model reads a
+  --             rolling prose summary from `summary`. Deleting a fact
+  --             triggers a regeneration that omits it.
+  mode        text        not null default 'chat' check (mode in ('chat', 'summary')),
+  -- Rolling prose summary used by `mode = 'summary'`. Empty for fresh
+  -- sessions or sessions that have never been in summary mode.
+  summary     text        not null default '',
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   metadata    jsonb       not null default '{}'::jsonb
