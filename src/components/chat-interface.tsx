@@ -3,10 +3,11 @@
 import { useChat } from '@ai-sdk/react'
 import { WorkflowChatTransport } from '@workflow/ai'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
+import { EmailCaptureCard } from '@/components/email-capture-card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatSession } from '@/hooks/use-chat-session'
 
@@ -46,6 +47,17 @@ export function ChatInterface() {
 }
 
 const RUN_ID_KEY = 'lca_chatbot_active_run_id'
+
+// Time of inactivity (in ms) after which the email-capture card pops up.
+// Picked at 5 minutes per the product brief; drop this to ~60s locally
+// when you're iterating on the card UX.
+const EMAIL_CAPTURE_IDLE_MS = 5 * 60 * 1000
+
+// Minimum messages before we even consider showing the card — we want at
+// least one back-and-forth so the recap has substance.
+const EMAIL_CAPTURE_MIN_MESSAGES = 2
+
+type CaptureState = 'hidden' | 'shown' | 'submitted' | 'dismissed'
 
 function ChatInterfaceInner() {
   const sessionId = useChatSession()
@@ -88,7 +100,7 @@ function ChatInterfaceInner() {
     [],
   )
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, setMessages, status } = useChat({
     // id becomes the chatId sent by WorkflowChatTransport
     id: sessionId ?? undefined,
     transport,
@@ -100,18 +112,111 @@ function ChatInterfaceInner() {
 
   const isStreaming = status === 'streaming' || status === 'submitted'
 
+  // ─── Email-capture inactivity detection ─────────────────────────────────
+  //
+  // After EMAIL_CAPTURE_IDLE_MS without a new message (and once we have a
+  // real conversation going), surface the recap+CTA card. Once the visitor
+  // submits, dismisses, or sends a new message, we don't pop it again for
+  // the rest of the session — re-prompting feels naggy.
+  const [captureState, setCaptureState] = useState<CaptureState>('hidden')
+  const messageCount = messages.length
+
+  // Detect "new message arrived while card was shown" by comparing the
+  // current message count to whatever we last saw. We can't fold this into
+  // the timer effect: that one has captureState in its deps, and a transition
+  // hidden → shown would re-run it and instantly dismiss the freshly-opened
+  // card before the user ever sees it.
+  const prevMessageCountRef = useRef(messageCount)
+  useEffect(() => {
+    const prev = prevMessageCountRef.current
+    prevMessageCountRef.current = messageCount
+    if (captureState === 'shown' && messageCount > prev) {
+      setCaptureState('dismissed')
+    }
+  }, [messageCount, captureState])
+
+  useEffect(() => {
+    if (
+      captureState !== 'hidden' ||
+      messageCount < EMAIL_CAPTURE_MIN_MESSAGES ||
+      isStreaming
+    ) {
+      return
+    }
+
+    const timer = setTimeout(() => {
+      setCaptureState('shown')
+    }, EMAIL_CAPTURE_IDLE_MS)
+
+    return () => clearTimeout(timer)
+  }, [messageCount, isStreaming, captureState])
+
+  const handleEmailSubmitted = useCallback(() => {
+    setCaptureState('submitted')
+  }, [])
+
+  const handleEmailDismissed = useCallback(() => {
+    setCaptureState('dismissed')
+  }, [])
+
   const handleSubmit = () => {
     if (!input.trim() || isStreaming || !sessionId) return
     sendMessage({ text: input })
     setInput('')
   }
 
+  // When the visitor deletes a fact from the panel, scrub the matching
+  // `save_visitor_fact` tool result from useChat's message state. Without
+  // this, convertToModelMessages on the next turn would still hand the model
+  // the original structured tool call, and it would keep referencing the
+  // deleted fact. The system prompt also reloads facts every turn — that's
+  // the backstop for any assistant prose that mentioned the fact.
+  const handleFactDeleted = useCallback(
+    (factId: string) => {
+      setMessages((prev) =>
+        prev
+          .map((msg) => ({
+            ...msg,
+            parts: msg.parts.filter((part) => {
+              if (part.type !== 'tool-save_visitor_fact') return true
+              if (
+                'output' in part &&
+                part.output &&
+                typeof part.output === 'object' &&
+                'id' in part.output &&
+                (part.output as { id?: unknown }).id === factId
+              ) {
+                return false
+              }
+              return true
+            }),
+          }))
+          .filter((msg) => msg.parts.length > 0),
+      )
+    },
+    [setMessages],
+  )
+
+  const showCapture = captureState === 'shown' || captureState === 'submitted'
+
   return (
     <div className="flex h-full">
       {/* Chat column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <ScrollArea className="flex-1">
-          <ChatMessages messages={messages} isStreaming={isStreaming} />
+          <ChatMessages
+            messages={messages}
+            isStreaming={isStreaming}
+            footer={
+              showCapture && sessionId ? (
+                <EmailCaptureCard
+                  sessionId={sessionId}
+                  onSubmitted={handleEmailSubmitted}
+                  onDismiss={handleEmailDismissed}
+                />
+              ) : null
+            }
+          />
         </ScrollArea>
 
         <ChatInput
@@ -124,7 +229,7 @@ function ChatInterfaceInner() {
 
       {/* Visitor facts sidebar */}
       <div className="hidden w-72 shrink-0 lg:flex lg:flex-col">
-        <VisitorFactsPanel sessionId={sessionId} />
+        <VisitorFactsPanel sessionId={sessionId} onFactDeleted={handleFactDeleted} />
       </div>
     </div>
   )

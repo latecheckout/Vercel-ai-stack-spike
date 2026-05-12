@@ -19,12 +19,17 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ModelMessage, UIMessageChunk } from 'ai'
 import { AGENT_INSTRUCTIONS } from './instructions'
-import { retrieveLcaKnowledge } from './tools/retrieve-lca-knowledge'
 import { saveMessage } from '../db/queries/messages'
 import {
   saveVisitorFact as dbSaveVisitorFact,
+  getVisitorFacts as dbGetVisitorFacts,
+  type VisitorFact,
   type VisitorFactCategory,
 } from '../db/queries/visitor-facts'
+import {
+  searchLcaKnowledge as dbSearchLcaKnowledge,
+  type LcaKnowledgeHit,
+} from '../db/queries/lca-knowledge'
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
 
@@ -33,11 +38,17 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
 
   const writable = getWritable<UIMessageChunk>()
 
+  // Reload the current facts every turn. The visitor can delete facts from
+  // the panel; without this, the model would keep referencing them because
+  // the `save_visitor_fact` tool calls and their results still live in the
+  // conversation history.
+  const currentFacts = await loadVisitorFacts(chatId)
+
   const agent = new DurableAgent({
     model: 'anthropic/claude-sonnet-4.5',
-    instructions: AGENT_INSTRUCTIONS,
+    instructions: buildInstructions(currentFacts),
     tools: {
-      retrieve_lca_knowledge: retrieveLcaKnowledge,
+      retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
       research_visitor: makeResearchVisitorTool(),
       save_visitor_fact: makeSaveVisitorFactTool(chatId),
     },
@@ -53,11 +64,42 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
   })
 }
 
+function buildInstructions(facts: VisitorFact[]): string {
+  const factsBlock =
+    facts.length === 0
+      ? 'No visitor facts saved yet.'
+      : facts
+          .map((f) => `- [${f.category}] ${f.fact} (source: ${f.source})`)
+          .join('\n')
+
+  return `${AGENT_INSTRUCTIONS}
+
+## Visitor facts — current source of truth
+
+This list is the authoritative state right now. The visitor can remove facts
+from their panel at any time, so prior \`save_visitor_fact\` results in the
+conversation history may be out of date. If a fact appeared in earlier tool
+output but is NOT in the list below, the visitor has removed it — do not
+reference it, and do not re-save it unless the visitor restates it.
+
+${factsBlock}`
+}
+
 // ─── Steps ─────────────────────────────────────────────────────────────────
 
 async function persistAssistantMessage(chatId: string, text: string) {
   'use step'
   await saveMessage(chatId, 'assistant', text).catch(() => undefined)
+}
+
+async function loadVisitorFacts(sessionId: string): Promise<VisitorFact[]> {
+  'use step'
+  try {
+    return await dbGetVisitorFacts(sessionId)
+  } catch (err) {
+    console.error('[loadVisitorFacts] failed', err)
+    return []
+  }
 }
 
 type ResearchResult = {
@@ -128,7 +170,53 @@ async function persistVisitorFact(
   }
 }
 
+async function searchLcaKnowledgeStep(query: string): Promise<LcaKnowledgeHit[]> {
+  'use step'
+
+  try {
+    return await dbSearchLcaKnowledge(query, 3)
+  } catch (err) {
+    console.error('[retrieve_lca_knowledge] failed', err)
+    return []
+  }
+}
+
 // ─── Tool wrappers (NOT steps) ─────────────────────────────────────────────
+
+function makeRetrieveLcaKnowledgeTool() {
+  return tool({
+    description:
+      'Search the curated LCA knowledge base for approved content about services, ' +
+      'case studies, approach, hiring, and capabilities. ' +
+      'Always call this before making any factual statement about LCA.',
+    inputSchema: z.object({
+      query: z.string().describe('Natural-language question or topic to look up'),
+    }),
+    execute: async ({ query }) => {
+      const results = await searchLcaKnowledgeStep(query)
+
+      if (results.length === 0) {
+        return {
+          found: false,
+          results: [] as never[],
+          note: 'No matching content found. Do not invent details — tell the visitor to email anthony@latecheckout.studio.',
+        }
+      }
+
+      return {
+        found: true,
+        results: results.map((item) => ({
+          id: item.id,
+          title: item.title,
+          category: item.category,
+          content: item.content,
+          source_url: item.source_url,
+        })),
+        note: undefined as string | undefined,
+      }
+    },
+  })
+}
 
 function makeResearchVisitorTool() {
   return tool({

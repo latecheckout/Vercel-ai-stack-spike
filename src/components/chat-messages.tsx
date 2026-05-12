@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
 import { Loader2, Search, BookOpen, Database } from 'lucide-react'
+import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 
 // Tool call display metadata
@@ -15,15 +16,19 @@ const TOOL_META: Record<string, { label: string; Icon: React.ComponentType<{ cla
 interface ChatMessagesProps {
   messages: UIMessage[]
   isStreaming: boolean
+  /** Optional inline element rendered after the last message — used for the
+   *  end-of-conversation email capture card so it scrolls with the chat. */
+  footer?: React.ReactNode
 }
 
-export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
+export function ChatMessages({ messages, isStreaming, footer }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll to bottom as messages arrive
+  // Auto-scroll to bottom as messages arrive — and when the footer slot
+  // appears, so the email-capture card lands in view.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isStreaming])
+  }, [messages, isStreaming, footer])
 
   if (messages.length === 0) {
     return (
@@ -51,6 +56,8 @@ export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
         </div>
       )}
 
+      {footer}
+
       <div ref={bottomRef} />
     </div>
   )
@@ -76,17 +83,11 @@ function MessageBubble({ message }: { message: UIMessage }) {
                 className={cn(
                   'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
                   isUser
-                    ? 'bg-primary text-primary-foreground rounded-br-sm'
+                    ? 'bg-primary text-primary-foreground rounded-br-sm whitespace-pre-wrap'
                     : 'bg-muted rounded-bl-sm',
                 )}
               >
-                {/* Simple newline → <br> rendering */}
-                {part.text.split('\n').map((line, j) => (
-                  <span key={j}>
-                    {j > 0 && <br />}
-                    {line}
-                  </span>
-                ))}
+                {isUser ? part.text : <Streamdown>{part.text}</Streamdown>}
               </div>
             )
           }

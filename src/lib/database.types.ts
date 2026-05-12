@@ -34,29 +34,70 @@ export type Database = {
   }
   public: {
     Tables: {
+      email_captures: {
+        Row: {
+          created_at: string
+          email: string
+          id: string
+          session_id: string
+          summary: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          id?: string
+          session_id: string
+          summary: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          id?: string
+          session_id?: string
+          summary?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_captures_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       lca_knowledge: {
         Row: {
           category: string
           content: string
           created_at: string
-          embedding: string | null
           id: string
+          search_vector: unknown
+          source_url: string | null
+          tags: string[]
           title: string
         }
         Insert: {
           category: string
           content: string
           created_at?: string
-          embedding?: string | null
           id?: string
+          search_vector?: unknown
+          source_url?: string | null
+          tags?: string[]
           title: string
         }
         Update: {
           category?: string
           content?: string
           created_at?: string
-          embedding?: string | null
           id?: string
+          search_vector?: unknown
+          source_url?: string | null
+          tags?: string[]
           title?: string
         }
         Relationships: []
@@ -99,18 +140,21 @@ export type Database = {
           id: string
           metadata: Json
           updated_at: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
           id: string
           metadata?: Json
           updated_at?: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
           id?: string
           metadata?: Json
           updated_at?: string
+          user_id?: string | null
         }
         Relationships: []
       }
@@ -154,7 +198,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      search_lca_knowledge: {
+        Args: { max_results?: number; q: string }
+        Returns: {
+          category: string
+          content: string
+          id: string
+          rank: number
+          source_url: string
+          tags: string[]
+          title: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

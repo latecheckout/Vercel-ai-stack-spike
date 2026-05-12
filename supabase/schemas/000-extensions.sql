@@ -1,5 +1,5 @@
 -- Postgres extensions used across the schema.
--- pgvector backs the (production) semantic-search index on lca_knowledge.
--- The spike itself uses keyword search — the extension is here so the
--- generated migration matches the production-shape we'd ship.
-create extension if not exists vector;
+-- The spike uses Postgres built-in full-text search (tsvector/tsquery) for
+-- lca_knowledge, so no extension is required at the moment. Add new
+-- extensions here when needed (e.g. `create extension if not exists vector`
+-- for pgvector if we move to semantic search).
