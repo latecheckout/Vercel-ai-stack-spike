@@ -140,7 +140,9 @@ src/
   lib/
     agent/
       instructions.ts                ← system prompt
-      chat-workflow.ts               ← workflow + ALL 'use step' fns + tool wrappers
+      chat/
+        index.ts                     ← runChatWorkflow + tool wrappers
+        steps.ts                     ← all 'use step' functions (durable units)
       tools/retrieve-lca-knowledge.ts← keyword search (no 'use step', in-memory)
     knowledge/lca-content.ts         ← curated LCA content (source of truth)
     supabase/
@@ -157,9 +159,12 @@ supabase/
 ```
 
 If you need to add a new durable tool or step, follow the recipe in
-[`AGENTS.md`](./AGENTS.md#adding-a-new-durable-tool) — there are silent
-failure modes if you do it wrong (steps must be colocated with the workflow
-in the same file, and `'use step'` only works on *named* async functions).
+[`AGENTS.md`](./AGENTS.md#adding-a-new-durable-tool). The main silent
+failure mode is that `'use step'` only works on *named* async functions —
+anonymous arrows passed to `tool({ execute })` are skipped by the SWC
+transform with no error. Steps themselves can live in any module reachable
+from the workflow's import graph (`chat/index.ts` → `chat/steps.ts` here),
+which matches the [official SDK guidance](https://workflow-sdk.dev/docs/foundations/workflows-and-steps).
 
 ---
 
@@ -197,7 +202,7 @@ for the why.
 
 | Symptom                                                      | Likely cause / fix |
 |--------------------------------------------------------------|--------------------|
-| `{"fatal":true,"name":"FatalError"}` in the workflow stream  | Step not registered. Run the grep above and confirm every `'use step'` function appears. Most common cause: the function isn't *named*, or it's defined in a file other than `chat-workflow.ts`. |
+| `{"fatal":true,"name":"FatalError"}` in the workflow stream  | Step not registered. Run the grep above and confirm every `'use step'` function appears. Most common cause: the function isn't *named* (anonymous arrows are silently skipped), or its module is no longer reachable from `chat/index.ts`'s import graph. |
 | `research_visitor` rejects a URL with "Private or reserved IP" / "Loopback" / "Only http/https" | The URL hit the SSRF guard in `validateVisitorUrl`. Expected for internal/loopback targets — ask the visitor for a public https URL instead. |
 | `supabase db reset` fails with port already in use           | Stop another local Supabase: `supabase stop`, or change ports in `supabase/config.toml`. |
 | `pnpm db:gen-types` produces an empty file                   | Local Supabase isn't running. Run `supabase start` first. |
