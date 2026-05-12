@@ -2,26 +2,39 @@
 
 import { useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
-import { Loader2, Search, BookOpen, Database } from 'lucide-react'
+import { Loader2, Search, BookOpen, Database, UserRound } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
+import {
+  ConnectRequestCard,
+  type ConnectDraft,
+} from '@/components/connect-request-card'
 
 // Tool call display metadata
 const TOOL_META: Record<string, { label: string; Icon: React.ComponentType<{ className?: string }> }> = {
   research_visitor: { label: 'Reading your site…', Icon: Search },
   retrieve_lca_knowledge: { label: 'Checking LCA knowledge base…', Icon: BookOpen },
   save_visitor_fact: { label: 'Saving fact…', Icon: Database },
+  offer_lca_connect: { label: 'Drafting an intro…', Icon: UserRound },
 }
 
 interface ChatMessagesProps {
   messages: UIMessage[]
   isStreaming: boolean
+  /** Session id — needed so inline tool-cards (e.g. ConnectRequestCard)
+   *  can POST to their endpoints. */
+  sessionId: string | null
   /** Optional inline element rendered after the last message — used for the
    *  end-of-conversation email capture card so it scrolls with the chat. */
   footer?: React.ReactNode
 }
 
-export function ChatMessages({ messages, isStreaming, footer }: ChatMessagesProps) {
+export function ChatMessages({
+  messages,
+  isStreaming,
+  sessionId,
+  footer,
+}: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom as messages arrive — and when the footer slot
@@ -45,7 +58,7 @@ export function ChatMessages({ messages, isStreaming, footer }: ChatMessagesProp
   return (
     <div className="flex flex-col gap-4 px-4 py-4">
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
+        <MessageBubble key={message.id} message={message} sessionId={sessionId} />
       ))}
 
       {/* Streaming indicator — shown between last message and the bottom */}
@@ -63,7 +76,13 @@ export function ChatMessages({ messages, isStreaming, footer }: ChatMessagesProp
   )
 }
 
-function MessageBubble({ message }: { message: UIMessage }) {
+function MessageBubble({
+  message,
+  sessionId,
+}: {
+  message: UIMessage
+  sessionId: string | null
+}) {
   const isUser = message.role === 'user'
 
   return (
@@ -97,6 +116,24 @@ function MessageBubble({ message }: { message: UIMessage }) {
           // `state` of input-streaming | input-available | output-available | output-error.
           if (isToolUIPart(part)) {
             const toolName = getToolName(part)
+
+            // offer_lca_connect is special — once the draft is available
+            // we render the full inline form instead of a status pill.
+            // While the tool is still running we fall through to the
+            // generic chip below ("Drafting an intro…").
+            if (
+              toolName === 'offer_lca_connect' &&
+              part.state === 'output-available' &&
+              sessionId
+            ) {
+              const draft = (part.output ?? {}) as ConnectDraft
+              return (
+                <div key={i} className="w-full">
+                  <ConnectRequestCard sessionId={sessionId} draft={draft} />
+                </div>
+              )
+            }
+
             const meta = TOOL_META[toolName]
             if (!meta) return null
 

@@ -12,7 +12,8 @@
  */
 
 import { extendSummary } from '../summary'
-import { saveMessage } from '../../db/queries/messages'
+import { draftConnectEmail, type ConnectDraft } from '../connect-request'
+import { saveMessage, getMessages } from '../../db/queries/messages'
 import {
   getSession,
   updateSessionSummary,
@@ -106,6 +107,47 @@ export async function persistVisitorFact(
     console.error('[save_visitor_fact] failed', err)
     return {
       saved: false as const,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+// ─── Connect-request draft (LCA intro flow) ────────────────────────────────
+
+export type DraftConnectResult =
+  | { ok: true; subject: string; body: string }
+  | { ok: false; error: string }
+
+/**
+ * Build the subject + body the visitor will see prefilled in the connect
+ * card. Loads the transcript and current facts inside the step so the
+ * model gets the freshest context (the visitor may have just deleted a
+ * fact via the panel — same reasoning as `extendSummaryStep`).
+ */
+export async function draftConnectRequestStep(
+  sessionId: string,
+): Promise<DraftConnectResult> {
+  'use step'
+
+  try {
+    const [messages, facts] = await Promise.all([
+      getMessages(sessionId),
+      dbGetVisitorFacts(sessionId),
+    ])
+
+    if (messages.length === 0) {
+      return {
+        ok: false,
+        error: 'No conversation yet — nothing to draft from.',
+      }
+    }
+
+    const draft: ConnectDraft = await draftConnectEmail({ messages, facts })
+    return { ok: true, subject: draft.subject, body: draft.body }
+  } catch (err) {
+    console.error('[draftConnectRequestStep] failed', err)
+    return {
+      ok: false,
       error: err instanceof Error ? err.message : String(err),
     }
   }

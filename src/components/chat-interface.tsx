@@ -298,6 +298,7 @@ function ChatInterfaceInner() {
           <ChatMessages
             messages={messages}
             isStreaming={isStreaming}
+            sessionId={sessionId}
             footer={
               showCapture && sessionId ? (
                 <EmailCaptureCard

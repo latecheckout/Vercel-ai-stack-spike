@@ -28,7 +28,10 @@ import {
   searchWeb,
   persistVisitorFact,
   searchLcaKnowledgeStep,
+  draftConnectRequestStep,
 } from './steps'
+
+const LCA_CONNECT_RECIPIENT = 'anthony@latecheckout.studio'
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
 
@@ -65,6 +68,7 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
       fetch_website: makeFetchWebsiteTool(),
       search_web: makeSearchWebTool(),
       save_visitor_fact: makeSaveVisitorFactTool(chatId),
+      offer_lca_connect: makeOfferLcaConnectTool(chatId),
     },
     onFinish: async ({ text }) => {
       await persistAssistantMessage(chatId, text)
@@ -223,6 +227,49 @@ function makeSearchWebTool() {
         ),
     }),
     execute: async ({ query }) => searchWeb(query),
+  })
+}
+
+function makeOfferLcaConnectTool(sessionId: string) {
+  return tool({
+    description:
+      'Offer the visitor an intro to a human at LCA. Call this when the ' +
+      'visitor has shared enough for a real follow-up to be useful — typically ' +
+      'their company, role, and what they are working on, AND they have shown ' +
+      'real interest in something LCA does (a service, a case study, hiring). ' +
+      'Do NOT call this just because the conversation is winding down — only ' +
+      'when there is a concrete reason to connect. The tool returns a draft ' +
+      'subject + body which the visitor sees inline as a fillable form (their ' +
+      'email gets added, then sent to LCA with them CC\'d). After calling, say ' +
+      'one short sentence acknowledging the offer (e.g. "I put together a draft ' +
+      '— have a look and send if it feels right.") and stop. Do NOT paste the ' +
+      'draft into your reply; the form renders it.',
+    inputSchema: z.object({
+      reason: z
+        .string()
+        .describe(
+          'One-line reason this is a good moment to offer connecting them, ' +
+            'e.g. "visitor is exploring AI rollout at Acme and asked about the ' +
+            'Innovation Lab service".',
+        ),
+    }),
+    execute: async ({ reason }) => {
+      const draft = await draftConnectRequestStep(sessionId)
+      if (!draft.ok) {
+        return {
+          ready: false as const,
+          error: draft.error,
+          reason,
+        }
+      }
+      return {
+        ready: true as const,
+        recipient: LCA_CONNECT_RECIPIENT,
+        subject: draft.subject,
+        body: draft.body,
+        reason,
+      }
+    },
   })
 }
 
