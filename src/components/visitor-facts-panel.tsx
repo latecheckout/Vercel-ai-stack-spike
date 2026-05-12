@@ -12,6 +12,7 @@ import {
   MessagesSquare,
   BrainCircuit,
   Sparkles,
+  RotateCcw,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { Badge } from '@/components/ui/badge'
@@ -23,6 +24,7 @@ import {
   useUpdateSessionMode,
   useResetSession,
   useRegenerateSummary,
+  useHardResetSession,
 } from '@/hooks/use-session-state'
 import type { VisitorFact } from '@/lib/db/queries/visitor-facts'
 import type { SessionMode } from '@/lib/db/queries/sessions'
@@ -48,12 +50,17 @@ interface VisitorFactsPanelProps {
    *  clear its in-memory message list (the server-side reset has already
    *  run by the time this is called). */
   onConversationReset?: () => void
+  /** Called after the "Start over" button has wiped facts, transcript, and
+   *  summary on the server. Parent clears useChat state and rotates the
+   *  anonymous auth user. */
+  onHardReset?: () => void | Promise<void>
 }
 
 export function VisitorFactsPanel({
   sessionId,
   onFactDeleted,
   onConversationReset,
+  onHardReset,
 }: VisitorFactsPanelProps) {
   const { data: facts = [], isLoading: factsLoading } = useVisitorFacts(sessionId)
   const { data: sessionState } = useSessionState(sessionId)
@@ -61,11 +68,13 @@ export function VisitorFactsPanel({
   const updateModeMutation = useUpdateSessionMode(sessionId)
   const resetMutation = useResetSession(sessionId)
   const regenerateMutation = useRegenerateSummary(sessionId)
+  const hardResetMutation = useHardResetSession(sessionId)
 
   // Track which fact (if any) is in the "confirm delete" state for Mode 1.
   // We only ever have one pending at a time — clicking ✕ on a different
   // fact cancels the previous prompt.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [hardResetConfirming, setHardResetConfirming] = useState(false)
 
   const mode: SessionMode = sessionState?.mode ?? 'chat'
   const summary = sessionState?.summary ?? ''
@@ -106,6 +115,23 @@ export function VisitorFactsPanel({
   }
 
   const handleCancelDelete = () => setPendingDeleteId(null)
+
+  const handleHardResetRequest = () => {
+    setPendingDeleteId(null)
+    setHardResetConfirming(true)
+  }
+
+  const handleHardResetConfirm = async () => {
+    try {
+      await hardResetMutation.mutateAsync()
+      setHardResetConfirming(false)
+      await onHardReset?.()
+    } catch {
+      /* mutation surface handles error state */
+    }
+  }
+
+  const handleHardResetCancel = () => setHardResetConfirming(false)
 
   return (
     <div className="flex h-full flex-col border-l bg-muted/30">
@@ -190,10 +216,55 @@ export function VisitorFactsPanel({
 
       {/* Footer */}
       <div className="shrink-0 border-t px-4 py-3">
-        <p className="text-[11px] text-muted-foreground">
-          {facts.length} fact{facts.length !== 1 ? 's' : ''} ·{' '}
-          {mode === 'chat' ? 'chat mode' : 'summary mode'}
-        </p>
+        {hardResetConfirming ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
+            <p className="text-[11px] leading-snug text-destructive">
+              Wipe every fact, the chat history, and the summary? You&apos;ll
+              start over as a brand-new anonymous visitor.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 px-2 text-xs"
+                onClick={handleHardResetConfirm}
+                disabled={hardResetMutation.isPending}
+              >
+                {hardResetMutation.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  'Yes, start over'
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                onClick={handleHardResetCancel}
+                disabled={hardResetMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground">
+              {facts.length} fact{facts.length !== 1 ? 's' : ''} ·{' '}
+              {mode === 'chat' ? 'chat mode' : 'summary mode'}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={handleHardResetRequest}
+              disabled={!sessionId}
+            >
+              <RotateCcw className="h-3 w-3" />
+              Start over
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -74,7 +74,8 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
     }),
     tools: {
       retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
-      research_visitor: makeResearchVisitorTool(),
+      fetch_website: makeFetchWebsiteTool(),
+      search_web: makeSearchWebTool(),
       save_visitor_fact: makeSaveVisitorFactTool(chatId),
     },
     onFinish: async ({ text }) => {
@@ -218,17 +219,17 @@ async function extendSummaryStep(
   }
 }
 
-type ResearchResult = {
+type FetchResult = {
   success: boolean
   url: string
   content: string
   error: string | null
 }
 
-async function fetchVisitorSite(url: string): Promise<ResearchResult> {
+async function fetchPublicWebsite(url: string): Promise<FetchResult> {
   'use step'
 
-  const validated = validateVisitorUrl(url)
+  const validated = validatePublicUrl(url)
   if (!validated.ok) {
     return { success: false, url, content: '', error: validated.reason }
   }
@@ -236,7 +237,7 @@ async function fetchVisitorSite(url: string): Promise<ResearchResult> {
   try {
     const res = await fetch(validated.url, {
       headers: {
-        'User-Agent': 'LCA-Research-Bot/1.0 (reading your site as requested in chat)',
+        'User-Agent': 'LCA-Research-Bot/1.0 (+latecheckout.agency)',
         Accept: 'text/html,application/xhtml+xml,*/*;q=0.9',
       },
       signal: AbortSignal.timeout(20_000),
@@ -256,11 +257,93 @@ async function fetchVisitorSite(url: string): Promise<ResearchResult> {
     const text = stripHtml(html).slice(0, 6000)
     return { success: true, url, content: text, error: null }
   } catch (err) {
-    console.error('[research_visitor] failed', err)
+    console.error('[fetch_website] failed', err)
     return {
       success: false,
       url,
       content: '',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+type WebSearchHit = {
+  title: string
+  url: string
+  snippet: string
+}
+
+type WebSearchResult =
+  | { success: true; query: string; results: WebSearchHit[]; answer: string | null }
+  | { success: false; query: string; results: never[]; answer: null; error: string }
+
+async function searchWeb(query: string): Promise<WebSearchResult> {
+  'use step'
+
+  const apiKey = process.env.TAVILY_API_KEY
+  if (!apiKey) {
+    return {
+      success: false,
+      query,
+      results: [],
+      answer: null,
+      error:
+        'Web search is not configured (TAVILY_API_KEY missing). Tell the visitor you cannot search the web right now.',
+    }
+  }
+
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: 'basic',
+        max_results: 5,
+        include_answer: true,
+        include_raw_content: false,
+        include_images: false,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+
+    if (!res.ok) {
+      return {
+        success: false,
+        query,
+        results: [],
+        answer: null,
+        error: `Tavily HTTP ${res.status} ${res.statusText}`,
+      }
+    }
+
+    const json = (await res.json()) as {
+      answer?: string | null
+      results?: Array<{ title?: string; url?: string; content?: string }>
+    }
+
+    const results: WebSearchHit[] = (json.results ?? []).slice(0, 5).map((r) => ({
+      title: r.title ?? '',
+      url: r.url ?? '',
+      snippet: (r.content ?? '').slice(0, 600),
+    }))
+
+    return {
+      success: true,
+      query,
+      results,
+      answer: typeof json.answer === 'string' && json.answer.length > 0 ? json.answer : null,
+    }
+  } catch (err) {
+    console.error('[search_web] failed', err)
+    return {
+      success: false,
+      query,
+      results: [],
+      answer: null,
       error: err instanceof Error ? err.message : String(err),
     }
   }
@@ -334,19 +417,40 @@ function makeRetrieveLcaKnowledgeTool() {
   })
 }
 
-function makeResearchVisitorTool() {
+function makeFetchWebsiteTool() {
   return tool({
     description:
-      'Fetch and analyse a public URL that the visitor has explicitly provided. ' +
-      'Before calling, tell the visitor: "Give me a sec — reading your site." ' +
-      'Only call with URLs the visitor gave you. Public pages only.',
+      'Fetch and read a public webpage. Use this proactively to learn about the ' +
+      'visitor — e.g. when they mention a company, give an email (try https://<domain>), ' +
+      'or share a URL. Before calling, tell the visitor what you are doing, e.g. ' +
+      '"Give me a sec — checking <site>." Public pages only.',
     inputSchema: z.object({
       url: z
         .string()
         .url()
-        .describe("The visitor's URL — must have been explicitly provided by them"),
+        .describe('The full https URL to fetch (must be a public webpage)'),
     }),
-    execute: async ({ url }) => fetchVisitorSite(url),
+    execute: async ({ url }) => fetchPublicWebsite(url),
+  })
+}
+
+function makeSearchWebTool() {
+  return tool({
+    description:
+      'Run a web search to find information about the visitor or what they mentioned ' +
+      '— their company, their product, a competitor they referenced, etc. ' +
+      'Use this proactively the first time the visitor names a company or product so ' +
+      'you can verify details back to them. Then call fetch_website on the best-looking ' +
+      'result. Public web only — never use this to look up a person by name or email.',
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          'Natural-language search query, e.g. "Acme Corp official website" or ' +
+            '"WidgetPro product features"',
+        ),
+    }),
+    execute: async ({ query }) => searchWeb(query),
   })
 }
 
@@ -376,11 +480,12 @@ function makeSaveVisitorFactTool(sessionId: string) {
 
 type UrlValidation = { ok: true; url: URL } | { ok: false; reason: string }
 
-// Visitor-supplied URLs are an SSRF surface. Block obvious internal targets
-// before we let the serverless function fetch them. Note: this does not
-// resolve DNS, so a domain that points at a private IP can still slip through
-// — acceptable for this spike, since Vercel functions don't sit on a VPC.
-function validateVisitorUrl(input: string): UrlValidation {
+// Any URL the agent fetches is an SSRF surface (visitor-supplied or model-chosen).
+// Block obvious internal targets before we let the serverless function fetch them.
+// Note: this does not resolve DNS, so a domain that points at a private IP can
+// still slip through — acceptable for this spike, since Vercel functions don't
+// sit on a VPC.
+function validatePublicUrl(input: string): UrlValidation {
   let url: URL
   try {
     url = new URL(input)

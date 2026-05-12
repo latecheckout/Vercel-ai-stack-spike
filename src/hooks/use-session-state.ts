@@ -106,6 +106,30 @@ export function useResetSession(sessionId: string | null) {
 }
 
 /**
+ * POST the hard-reset endpoint — "start over" button. Drops the session
+ * row entirely; `messages` and `visitor_facts` cascade off, so this
+ * wipes facts + transcript + summary in one shot. Caller is responsible
+ * for clearing useChat state and rotating the anonymous auth user.
+ */
+export function useHardResetSession(sessionId: string | null) {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!sessionId) throw new Error('No session')
+      const res = await fetch(`/api/sessions/${sessionId}/hard-reset`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to hard-reset session')
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['session-state', sessionId] })
+      qc.invalidateQueries({ queryKey: ['visitor-facts', sessionId] })
+    },
+  })
+}
+
+/**
  * POST the regenerate-summary endpoint (Mode 2 fact-deletion path).
  * The deletion of the fact itself is a separate call — by the time this
  * fires, the facts list on the server is already the post-deletion view.

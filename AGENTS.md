@@ -8,7 +8,8 @@ to work with this repo. Read it before touching any code.
 **What it is:** Standalone spike to validate the Vercel AI Stack (Gateway, AI SDK v6,
 Workflow DevKit) on a real-feeling agent problem — a two-way learning chatbot
 for LCA (Late Checkout), an AI engineering studio. Vercel Sandbox was evaluated
-for the `research_visitor` tool and removed — see `pros-and-cons.md`.
+for visitor-site research and removed — see `pros-and-cons.md`. Proactive web
+search runs through Tavily (single `fetch` from a `'use step'` function).
 
 **What it is not:** Production. Not embedded in lca.agency. No analytics.
 This is a time-boxed learning exercise.
@@ -40,8 +41,9 @@ to anon + authenticated for the spike — see "Conventions" below.
   of `runChatWorkflow` (not at the top of the file — that's the WDK v3 pattern).
   The route handler invokes it via `start(runChatWorkflow, [args])` from `workflow/api`.
 - **Step functions live in `chat-workflow.ts`.** Every `'use step'` function — durable
-  retryable units like `fetchVisitorSite`, `persistVisitorFact`, `persistAssistantMessage`
-  — is declared as a *named async function* in `chat-workflow.ts` itself. Tool wrappers
+  retryable units like `fetchPublicWebsite`, `searchWeb`, `persistVisitorFact`,
+  `persistAssistantMessage` — is declared as a *named async function* in
+  `chat-workflow.ts` itself. Tool wrappers
   (`makeResearchVisitorTool`, `makeSaveVisitorFactTool`) live in the same file and
   reference those step functions from their `execute`. **Do not move step functions
   into separate files.** When we tried that, the WDK builder picked them up in the
@@ -196,6 +198,9 @@ pnpm build              # must pass (catches route/export issues)
 Copy `.env.local.example` to `.env.local` and fill in:
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway API key
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY`
+- `TAVILY_API_KEY` (optional) — powers the proactive `search_web` tool. When
+  unset the tool returns `"search unavailable"` instead of throwing, so the
+  agent will keep working without web search.
 - `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — when unset, the
   email-capture endpoint logs a warning and skips the send so local dev
   works without a Resend account. The full LCA Resend pipeline (PGMQ →
