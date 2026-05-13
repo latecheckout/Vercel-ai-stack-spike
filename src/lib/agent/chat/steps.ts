@@ -168,6 +168,12 @@ export async function searchLcaKnowledgeStep(
   }
 }
 
+// Both web tools route through Exa: /search returns ranked results with
+// snippet text, /contents extracts a full page for a known URL. Exa handles
+// crawling, HTML→text, and the SSRF surface server-side, so neither step
+// needs its own fetch + HTML strip + URL validator.
+const EXA_API_URL = 'https://api.exa.ai'
+
 export type FetchResult = {
   success: boolean
   url: string
@@ -178,19 +184,29 @@ export type FetchResult = {
 export async function fetchPublicWebsite(url: string): Promise<FetchResult> {
   'use step'
 
-  const validated = validatePublicUrl(url)
-  if (!validated.ok) {
-    return { success: false, url, content: '', error: validated.reason }
+  const apiKey = process.env.EXA_API_KEY
+  if (!apiKey) {
+    return {
+      success: false,
+      url,
+      content: '',
+      error:
+        'Website fetch is not configured (EXA_API_KEY missing). Tell the visitor you cannot read pages right now.',
+    }
   }
 
   try {
-    const res = await fetch(validated.url, {
+    const res = await fetch(`${EXA_API_URL}/contents`, {
+      method: 'POST',
       headers: {
-        'User-Agent': 'LCA-Research-Bot/1.0 (+latecheckout.agency)',
-        Accept: 'text/html,application/xhtml+xml,*/*;q=0.9',
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
       },
+      body: JSON.stringify({
+        urls: [url],
+        text: { maxCharacters: 6000 },
+      }),
       signal: AbortSignal.timeout(20_000),
-      redirect: 'follow',
     })
 
     if (!res.ok) {
@@ -198,13 +214,27 @@ export async function fetchPublicWebsite(url: string): Promise<FetchResult> {
         success: false,
         url,
         content: '',
-        error: `HTTP ${res.status} ${res.statusText}`,
+        error: `Exa HTTP ${res.status} ${res.statusText}`,
       }
     }
 
-    const html = await res.text()
-    const text = stripHtml(html).slice(0, 6000)
-    return { success: true, url, content: text, error: null }
+    const json = (await res.json()) as {
+      results?: Array<{ url?: string; text?: string }>
+      statuses?: Array<{ status?: string; error?: { tag?: string } }>
+    }
+
+    const first = json.results?.[0]
+    if (!first?.text) {
+      const status = json.statuses?.[0]
+      return {
+        success: false,
+        url,
+        content: '',
+        error: status?.error?.tag ?? status?.status ?? 'No content returned',
+      }
+    }
+
+    return { success: true, url, content: first.text, error: null }
   } catch (err) {
     console.error('[fetch_website] failed', err)
     return {
@@ -223,38 +253,37 @@ export type WebSearchHit = {
 }
 
 export type WebSearchResult =
-  | { success: true; query: string; results: WebSearchHit[]; answer: string | null }
-  | { success: false; query: string; results: never[]; answer: null; error: string }
+  | { success: true; query: string; results: WebSearchHit[] }
+  | { success: false; query: string; results: never[]; error: string }
 
 export async function searchWeb(query: string): Promise<WebSearchResult> {
   'use step'
 
-  const apiKey = process.env.TAVILY_API_KEY
+  const apiKey = process.env.EXA_API_KEY
   if (!apiKey) {
     return {
       success: false,
       query,
       results: [],
-      answer: null,
       error:
-        'Web search is not configured (TAVILY_API_KEY missing). Tell the visitor you cannot search the web right now.',
+        'Web search is not configured (EXA_API_KEY missing). Tell the visitor you cannot search the web right now.',
     }
   }
 
   try {
-    const res = await fetch('https://api.tavily.com/search', {
+    const res = await fetch(`${EXA_API_URL}/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
       },
       body: JSON.stringify({
         query,
-        search_depth: 'basic',
-        max_results: 5,
-        include_answer: true,
-        include_raw_content: false,
-        include_images: false,
+        type: 'auto',
+        numResults: 5,
+        contents: {
+          text: { maxCharacters: 600 },
+        },
       }),
       signal: AbortSignal.timeout(15_000),
     })
@@ -264,117 +293,28 @@ export async function searchWeb(query: string): Promise<WebSearchResult> {
         success: false,
         query,
         results: [],
-        answer: null,
-        error: `Tavily HTTP ${res.status} ${res.statusText}`,
+        error: `Exa HTTP ${res.status} ${res.statusText}`,
       }
     }
 
     const json = (await res.json()) as {
-      answer?: string | null
-      results?: Array<{ title?: string; url?: string; content?: string }>
+      results?: Array<{ title?: string; url?: string; text?: string }>
     }
 
     const results: WebSearchHit[] = (json.results ?? []).slice(0, 5).map((r) => ({
       title: r.title ?? '',
       url: r.url ?? '',
-      snippet: (r.content ?? '').slice(0, 600),
+      snippet: (r.text ?? '').slice(0, 600),
     }))
 
-    return {
-      success: true,
-      query,
-      results,
-      answer:
-        typeof json.answer === 'string' && json.answer.length > 0 ? json.answer : null,
-    }
+    return { success: true, query, results }
   } catch (err) {
     console.error('[search_web] failed', err)
     return {
       success: false,
       query,
       results: [],
-      answer: null,
       error: err instanceof Error ? err.message : String(err),
     }
   }
-}
-
-// ─── Step-internal helpers ─────────────────────────────────────────────────
-
-type UrlValidation = { ok: true; url: URL } | { ok: false; reason: string }
-
-// Any URL the agent fetches is an SSRF surface (visitor-supplied or model-chosen).
-// Block obvious internal targets before we let the serverless function fetch them.
-// Note: this does not resolve DNS, so a domain that points at a private IP can
-// still slip through — acceptable for this spike, since Vercel functions don't
-// sit on a VPC.
-function validatePublicUrl(input: string): UrlValidation {
-  let url: URL
-  try {
-    url = new URL(input)
-  } catch {
-    return { ok: false, reason: 'Invalid URL' }
-  }
-
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return { ok: false, reason: 'Only http/https URLs are supported' }
-  }
-
-  const host = url.hostname.toLowerCase()
-  if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.localhost')) {
-    return { ok: false, reason: 'Loopback hosts are not allowed' }
-  }
-
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (v4) {
-    const a = Number(v4[1])
-    const b = Number(v4[2])
-    if (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      a >= 224
-    ) {
-      return { ok: false, reason: 'Private or reserved IP ranges are not allowed' }
-    }
-  }
-
-  // URL hostnames wrap IPv6 literals in brackets — strip them before matching.
-  if (host.startsWith('[') && host.endsWith(']')) {
-    const v6 = host.slice(1, -1)
-    if (
-      v6 === '::1' ||
-      v6 === '::' ||
-      v6.startsWith('fc') ||
-      v6.startsWith('fd') ||
-      v6.startsWith('fe8') ||
-      v6.startsWith('fe9') ||
-      v6.startsWith('fea') ||
-      v6.startsWith('feb')
-    ) {
-      return { ok: false, reason: 'Private or loopback IPv6 is not allowed' }
-    }
-  }
-
-  return { ok: true, url }
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }

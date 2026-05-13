@@ -8,8 +8,10 @@ to work with this repo. Read it before touching any code.
 **What it is:** Standalone spike to validate the Vercel AI Stack (Gateway, AI SDK v6,
 Workflow DevKit) on a real-feeling agent problem — a two-way learning chatbot
 for LCA (Late Checkout), an AI engineering studio. Vercel Sandbox was evaluated
-for visitor-site research and removed — see `pros-and-cons.md`. Proactive web
-search runs through Tavily (single `fetch` from a `'use step'` function).
+for visitor-site research and removed — see `pros-and-cons.md`. Both proactive
+web search (`search_web`) and page fetch (`fetch_website`) run through Exa
+(single `fetch` from a `'use step'` function); Exa handles crawling and
+HTML-to-text server-side.
 
 **What it is not:** Production. Not embedded in lca.agency. No analytics.
 This is a time-boxed learning exercise.
@@ -210,9 +212,10 @@ pnpm build              # must pass (catches route/export issues)
 Copy `.env.local.example` to `.env.local` and fill in:
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway API key
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY`
-- `TAVILY_API_KEY` (optional) — powers the proactive `search_web` tool. When
-  unset the tool returns `"search unavailable"` instead of throwing, so the
-  agent will keep working without web search.
+- `EXA_API_KEY` (optional) — powers both `search_web` (Exa `/search`) and
+  `fetch_website` (Exa `/contents`). When unset both tools return an
+  `"unavailable"` error instead of throwing, so the agent keeps working
+  without proactive research.
 - `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — when unset, the
   email-capture endpoint logs a warning and skips the send so local dev
   works without a Resend account. The full LCA Resend pipeline (PGMQ →

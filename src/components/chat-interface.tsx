@@ -52,9 +52,19 @@ const RUN_ID_KEY = 'lca_chatbot_active_run_id'
 const INTRO_MESSAGE =
   "I'm here to learn about what LCA can do for you. Can I ask what your role is and what brought you to LCA today?"
 
+// crypto.randomUUID is gated to secure contexts (HTTPS / localhost). When dev'ing
+// over a plain-HTTP tailnet IP it's undefined, so fall back to a non-crypto id —
+// this only needs to be unique within the React tree, not unguessable.
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function buildIntroMessage(): UIMessage {
   return {
-    id: `intro-${crypto.randomUUID()}`,
+    id: `intro-${randomId()}`,
     role: 'assistant',
     parts: [{ type: 'text', text: INTRO_MESSAGE }],
   }
