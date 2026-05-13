@@ -17,7 +17,7 @@ import { createClient } from '@/lib/supabase/server'
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const LCA_RECIPIENT = 'anthony@latecheckout.studio'
+const LCA_RECIPIENT = 'engineering@latecheckout.studio'
 const MAX_SUBJECT = 200
 const MAX_BODY = 8000
 
