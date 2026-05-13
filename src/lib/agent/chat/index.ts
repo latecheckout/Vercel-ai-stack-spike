@@ -31,7 +31,7 @@ import {
   draftConnectRequestStep,
 } from './steps'
 
-const LCA_CONNECT_RECIPIENT = 'anthony@latecheckout.studio'
+const LCA_CONNECT_RECIPIENT = 'engineering@latecheckout.studio'
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
 
