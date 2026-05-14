@@ -10,7 +10,7 @@
  * All three helpers use `generateText` against the Vercel AI Gateway.
  * They are *not* `'use step'` functions — they are plain async helpers
  * intended to be called either from API routes (regenerate, prune) or
- * from a `'use step'` wrapper inside `chat-workflow.ts` (extend).
+ * from a `'use step'` wrapper in `chat/steps.ts` (extend).
  */
 import { generateText } from 'ai'
 import type { VisitorFact } from '../db/queries/visitor-facts'

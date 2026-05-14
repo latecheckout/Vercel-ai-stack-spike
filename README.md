@@ -80,8 +80,9 @@ pnpm dev
 ```
 
 Open the app, send a message, and watch the agent stream a reply. If you give
-it a URL, the `research_visitor` step fetches the page directly (with SSRF
-guards) and feeds the stripped text back to the model.
+it a URL, the `fetch_website` step calls Exa's `/contents` endpoint to extract
+the page text and feeds it back to the model. The `search_web` step uses
+Exa's `/search` endpoint the same way. Both require `EXA_API_KEY`.
 
 ---
 
@@ -140,7 +141,9 @@ src/
   lib/
     agent/
       instructions.ts                ← system prompt
-      chat-workflow.ts               ← workflow + ALL 'use step' fns + tool wrappers
+      chat/
+        index.ts                     ← runChatWorkflow + tool wrappers
+        steps.ts                     ← all 'use step' functions (durable units)
       tools/retrieve-lca-knowledge.ts← keyword search (no 'use step', in-memory)
     knowledge/lca-content.ts         ← curated LCA content (source of truth)
     supabase/
@@ -157,9 +160,12 @@ supabase/
 ```
 
 If you need to add a new durable tool or step, follow the recipe in
-[`AGENTS.md`](./AGENTS.md#adding-a-new-durable-tool) — there are silent
-failure modes if you do it wrong (steps must be colocated with the workflow
-in the same file, and `'use step'` only works on *named* async functions).
+[`AGENTS.md`](./AGENTS.md#adding-a-new-durable-tool). The main silent
+failure mode is that `'use step'` only works on *named* async functions —
+anonymous arrows passed to `tool({ execute })` are skipped by the SWC
+transform with no error. Steps themselves can live in any module reachable
+from the workflow's import graph (`chat/index.ts` → `chat/steps.ts` here),
+which matches the [official SDK guidance](https://workflow-sdk.dev/docs/foundations/workflows-and-steps).
 
 ---
 
@@ -197,8 +203,8 @@ for the why.
 
 | Symptom                                                      | Likely cause / fix |
 |--------------------------------------------------------------|--------------------|
-| `{"fatal":true,"name":"FatalError"}` in the workflow stream  | Step not registered. Run the grep above and confirm every `'use step'` function appears. Most common cause: the function isn't *named*, or it's defined in a file other than `chat-workflow.ts`. |
-| `research_visitor` rejects a URL with "Private or reserved IP" / "Loopback" / "Only http/https" | The URL hit the SSRF guard in `validateVisitorUrl`. Expected for internal/loopback targets — ask the visitor for a public https URL instead. |
+| `{"fatal":true,"name":"FatalError"}` in the workflow stream  | Step not registered. Run the grep above and confirm every `'use step'` function appears. Most common cause: the function isn't *named* (anonymous arrows are silently skipped), or its module is no longer reachable from `chat/index.ts`'s import graph. |
+| `fetch_website` returns an Exa error (e.g. `404`, `blocked`, `timeout`) | Exa couldn't crawl the page. Ask the visitor for a different / public URL, or let the agent fall back to `search_web`. |
 | `supabase db reset` fails with port already in use           | Stop another local Supabase: `supabase stop`, or change ports in `supabase/config.toml`. |
 | `pnpm db:gen-types` produces an empty file                   | Local Supabase isn't running. Run `supabase start` first. |
 | Chat stream just hangs after sending a message               | Check the dev terminal — the workflow chunk likely threw before the first chunk reached the client. AI Gateway 401 (missing/invalid `AI_GATEWAY_API_KEY`) is the usual culprit. |

@@ -76,6 +76,21 @@ export async function updateSessionMode(
 }
 
 /**
+ * Delete the session row. `messages` and `visitor_facts` both reference
+ * `sessions.id` with `on delete cascade`, so a single delete here wipes
+ * the whole conversation surface for that id. The orphaned anonymous
+ * `auth.users` row is left behind — Supabase doesn't auto-delete those
+ * and the spike doesn't need to.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const supabase = await createClient()
+
+  const { error } = await supabase.from('sessions').delete().eq('id', sessionId)
+
+  if (error) throw new Error(`Failed to delete session: ${error.message}`)
+}
+
+/**
  * Replace the rolling summary. Called from the post-turn workflow step in
  * summary mode and from the regenerate-summary endpoint after a fact
  * deletion.

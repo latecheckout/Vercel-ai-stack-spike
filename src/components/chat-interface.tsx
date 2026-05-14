@@ -4,6 +4,7 @@ import { useChat } from '@ai-sdk/react'
 import { WorkflowChatTransport } from '@workflow/ai'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { UIMessage } from 'ai'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
@@ -48,6 +49,57 @@ export function ChatInterface() {
 
 const RUN_ID_KEY = 'lca_chatbot_active_run_id'
 
+const INTRO_MESSAGE =
+  "I'm here to learn about what LCA can do for you. Can I ask what your role is and what brought you to LCA today?"
+
+// crypto.randomUUID is gated to secure contexts (HTTPS / localhost). When dev'ing
+// over a plain-HTTP tailnet IP it's undefined, so fall back to a non-crypto id —
+// this only needs to be unique within the React tree, not unguessable.
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function buildIntroMessage(): UIMessage {
+  return {
+    id: `intro-${randomId()}`,
+    role: 'assistant',
+    parts: [{ type: 'text', text: INTRO_MESSAGE }],
+  }
+}
+
+const INTRO_SUGGESTIONS = [
+  'Tell me about LCA',
+  'What services does LCA provide?',
+  'Tell me about recent projects from LCA',
+] as const
+
+function IntroSuggestions({
+  onPick,
+  disabled,
+}: {
+  onPick: (text: string) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="flex flex-wrap gap-2 px-2">
+      {INTRO_SUGGESTIONS.map((text) => (
+        <button
+          key={text}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(text)}
+          className="rounded-full border bg-card px-3 py-1.5 text-xs text-foreground shadow-sm transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // Time of inactivity (in ms) after which the email-capture card pops up.
 // Picked at 5 minutes per the product brief; drop this to ~60s locally
 // when you're iterating on the card UX.
@@ -60,7 +112,7 @@ const EMAIL_CAPTURE_MIN_MESSAGES = 2
 type CaptureState = 'hidden' | 'shown' | 'submitted' | 'dismissed'
 
 function ChatInterfaceInner() {
-  const sessionId = useChatSession()
+  const { sessionId, resetSession } = useChatSession()
 
   // If we're loading mid-stream (e.g. after a refresh while the agent was
   // still talking), useChat picks this up and reconnects via the
@@ -111,6 +163,15 @@ function ChatInterfaceInner() {
   const [input, setInput] = useState('')
 
   const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // Canned intro: once auth has resolved and the chat is empty (fresh visitor
+  // or post-reset), drop a synthetic assistant turn so the bot opens the
+  // conversation instead of waiting. Skipped on resume so we don't prepend
+  // an extra bubble in front of an in-flight stream.
+  useEffect(() => {
+    if (!sessionId || activeRunId || messages.length > 0) return
+    setMessages([buildIntroMessage()])
+  }, [sessionId, activeRunId, messages.length, setMessages])
 
   // ─── Email-capture inactivity detection ─────────────────────────────────
   //
@@ -165,6 +226,23 @@ function ChatInterfaceInner() {
     setInput('')
   }
 
+  const handleSuggestionPick = useCallback(
+    (text: string) => {
+      if (isStreaming || !sessionId) return
+      sendMessage({ text })
+    },
+    [isStreaming, sessionId, sendMessage],
+  )
+
+  // Show the canned first-message pills only while the chat contains
+  // nothing but the intro turn — once the visitor sends anything (or the
+  // model is responding), they disappear and don't come back.
+  const showSuggestions =
+    !!sessionId &&
+    !isStreaming &&
+    messages.length === 1 &&
+    messages[0]?.role === 'assistant'
+
   // When the visitor deletes a fact from the panel, scrub the matching
   // `save_visitor_fact` tool result from useChat's message state. Without
   // this, convertToModelMessages on the next turn would still hand the model
@@ -207,6 +285,19 @@ function ChatInterfaceInner() {
     localStorage.removeItem(RUN_ID_KEY)
   }, [setMessages])
 
+  // "Start over" path: by the time this fires the server has dropped the
+  // entire session row (facts + transcript + summary cascaded off). We
+  // wipe the local chat surface, drop any in-flight run id, reset the
+  // email-capture timer, and rotate the anonymous auth user so the next
+  // message lands in a brand-new session id.
+  const handleHardReset = useCallback(async () => {
+    setMessages([])
+    localStorage.removeItem(RUN_ID_KEY)
+    setCaptureState('hidden')
+    prevMessageCountRef.current = 0
+    await resetSession()
+  }, [setMessages, resetSession])
+
   const showCapture = captureState === 'shown' || captureState === 'submitted'
 
   return (
@@ -217,12 +308,18 @@ function ChatInterfaceInner() {
           <ChatMessages
             messages={messages}
             isStreaming={isStreaming}
+            sessionId={sessionId}
             footer={
               showCapture && sessionId ? (
                 <EmailCaptureCard
                   sessionId={sessionId}
                   onSubmitted={handleEmailSubmitted}
                   onDismiss={handleEmailDismissed}
+                />
+              ) : showSuggestions ? (
+                <IntroSuggestions
+                  onPick={handleSuggestionPick}
+                  disabled={isStreaming}
                 />
               ) : null
             }
@@ -243,6 +340,7 @@ function ChatInterfaceInner() {
           sessionId={sessionId}
           onFactDeleted={handleFactDeleted}
           onConversationReset={handleConversationReset}
+          onHardReset={handleHardReset}
         />
       </div>
     </div>

@@ -17,7 +17,7 @@ export type LcaKnowledgeHit = {
  * step worker route handler). The workflow flow worker has no global
  * `fetch` / `AbortSignal` / `WebSocket`, so a tool's execute body cannot
  * call this directly — wrap it in a step. See `searchLcaKnowledgeStep`
- * in `src/lib/agent/chat-workflow.ts`.
+ * in `src/lib/agent/chat/steps.ts`.
  *
  * Implemented with `fetch` against PostgREST instead of `@supabase/supabase-js`
  * to avoid pulling in the Realtime client (which the step bundle doesn't

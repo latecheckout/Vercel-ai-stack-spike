@@ -8,7 +8,10 @@ to work with this repo. Read it before touching any code.
 **What it is:** Standalone spike to validate the Vercel AI Stack (Gateway, AI SDK v6,
 Workflow DevKit) on a real-feeling agent problem — a two-way learning chatbot
 for LCA (Late Checkout), an AI engineering studio. Vercel Sandbox was evaluated
-for the `research_visitor` tool and removed — see `pros-and-cons.md`.
+for visitor-site research and removed — see `pros-and-cons.md`. Both proactive
+web search (`search_web`) and page fetch (`fetch_website`) run through Exa
+(single `fetch` from a `'use step'` function); Exa handles crawling and
+HTML-to-text server-side.
 
 **What it is not:** Production. Not embedded in lca.agency. No analytics.
 This is a time-boxed learning exercise.
@@ -39,15 +42,21 @@ to anon + authenticated for the spike — see "Conventions" below.
 - **Agent code (load-bearing):** `'use workflow'` lives **inside the function body**
   of `runChatWorkflow` (not at the top of the file — that's the WDK v3 pattern).
   The route handler invokes it via `start(runChatWorkflow, [args])` from `workflow/api`.
-- **Step functions live in `chat-workflow.ts`.** Every `'use step'` function — durable
-  retryable units like `fetchVisitorSite`, `persistVisitorFact`, `persistAssistantMessage`
-  — is declared as a *named async function* in `chat-workflow.ts` itself. Tool wrappers
-  (`makeResearchVisitorTool`, `makeSaveVisitorFactTool`) live in the same file and
-  reference those step functions from their `execute`. **Do not move step functions
-  into separate files.** When we tried that, the WDK builder picked them up in the
-  workflow flow chunk but Turbopack failed to include them in the step-worker bundle,
-  so the workflow knew step IDs to call but the worker had no implementation —
-  manifesting as empty `FatalError` payloads and step-not-registered errors.
+- **Workflow + steps split across two files in `src/lib/agent/chat/`.** Per the
+  [official SDK structure guidance](https://workflow-sdk.dev/docs/foundations/workflows-and-steps),
+  each workflow lives in its own directory:
+  - `chat/index.ts` — `runChatWorkflow` + tool wrappers (`makeFetchWebsiteTool`,
+    `makeSaveVisitorFactTool`, etc.).
+  - `chat/steps.ts` — every `'use step'` function (`fetchPublicWebsite`,
+    `searchWeb`, `persistVisitorFact`, `persistAssistantMessage`, …) as a
+    *named exported async function*. Tool `execute` bodies in `index.ts`
+    import and call these.
+  Earlier docs in this repo claimed steps had to be colocated with the
+  workflow; that was true on a much older WDK version and was empirically
+  retested on `workflow@4.2.4` (see `Verifying step registration` below).
+  If steps stop registering after a refactor, that's the failure mode to
+  look for, but with the import graph reaching `chat/steps.ts` from
+  `chat/index.ts`, the SDK bundler discovers and registers all step IDs.
 - **`'use step'` directive must be the first statement of a named async function.**
   Anonymous arrow functions assigned to `tool({ execute: async () => { 'use step'; … } })`
   are silently skipped by the SWC transform — no `registerStepFunction` call, no error.
@@ -62,7 +71,7 @@ to anon + authenticated for the spike — see "Conventions" below.
     so they cannot perform I/O directly. The framework even rejects raw
     `fetch` with `"Global 'fetch' is unavailable in workflow functions."`
     Wrap any I/O (DB reads, HTTP requests) in a named `'use step'` function
-    declared in `chat-workflow.ts`, then call it from the tool's `execute`.
+    declared in `chat/steps.ts`, then call it from the tool's `execute`.
     Inside step functions, all globals (`fetch`, `AbortSignal`, `cookies()`)
     are available — the step worker is a normal Next.js route handler.
     For DB reads from steps, prefer raw `fetch` against PostgREST over
@@ -111,7 +120,9 @@ src/
   lib/
     agent/
       instructions.ts          ← system prompt (guard carefully)
-      chat-workflow.ts         ← workflow + ALL 'use step' functions + ALL tool wrappers
+      chat/
+        index.ts               ← runChatWorkflow + tool wrappers
+        steps.ts               ← all 'use step' functions (durable units)
     supabase/
       client.ts                ← @supabase/ssr browser client (Client Components)
       server.ts                ← @supabase/ssr server client — anon, RLS-enforced
@@ -149,31 +160,36 @@ pnpm db:gen-types
 
 ## Adding a new durable tool
 
-1. Add a named async function to `chat-workflow.ts` with `'use step'` as the first
-   statement of its body. This is your durable, retryable unit.
-2. Add (or extend) a `make<Name>Tool()` factory in the same file that returns
-   `tool({ description, inputSchema, execute })` and references the step function
-   from `execute`. For closure-bound state (e.g. `sessionId`), use an arrow adapter:
-   `execute: async (input) => mySte(closureArg, input.x)`.
+1. Add a named exported async function to `src/lib/agent/chat/steps.ts` with
+   `'use step'` as the first statement of its body. This is your durable,
+   retryable unit.
+2. In `src/lib/agent/chat/index.ts`, add (or extend) a `make<Name>Tool()`
+   factory that returns `tool({ description, inputSchema, execute })` and
+   imports the step function from `./steps`. For closure-bound state (e.g.
+   `sessionId`), use an arrow adapter:
+   `execute: async (input) => myStep(closureArg, input.x)`.
 3. Wire it into `runChatWorkflow`'s `tools: { … }` map.
-4. After `pnpm build`, sanity-check the step ID is registered in the step worker
-   bundle — see the snippet in `Verifying step registration` below.
+4. After `pnpm build`, sanity-check the step ID is registered — see
+   `Verifying step registration` below.
 
 ## Verifying step registration
 
-After a build, the step worker route at `.next/server/app/.well-known/workflow/v1/step/route.js`
-imports a fixed list of chunks. Every `'use step'` function should appear as a
-`registerStepFunction("step//./src/lib/agent/chat-workflow//<funcName>", …)` call in
-one of those chunks. To check:
+After a build, every `'use step'` function should appear as a
+`registerStepFunction("step//./src/lib/agent/chat/steps//<funcName>", …)` call
+somewhere in `.next/server/chunks/*.js`. To check:
 
 ```bash
 # bash
-grep -oE "step//\\./src/lib/agent[a-zA-Z0-9_./-]+" .next/server/chunks/*.js | sort -u
+grep -oE 'step//\./src/lib/agent[a-zA-Z0-9_./-]+' .next/server/chunks/*.js | sort -u
 ```
 
-If a step function is missing from this output, the workflow will call it and fail
-with an empty `FatalError` (`{"fatal":true,"name":"FatalError"}`) at runtime —
-that's the signature of `step-not-registered`.
+You should see one entry per step plus framework-internal steps from
+`@workflow/ai` and `workflow`. If one of your steps is missing here, the
+workflow will call it and fail with an empty `FatalError`
+(`{"fatal":true,"name":"FatalError"}`) at runtime — that's the signature of
+`step-not-registered`. The usual cause is a non-named function (arrow
+assigned to a variable) or a function that no module reachable from
+`chat/index.ts` actually imports.
 
 ## Pre-PR checklist
 
@@ -196,6 +212,10 @@ pnpm build              # must pass (catches route/export issues)
 Copy `.env.local.example` to `.env.local` and fill in:
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway API key
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY`
+- `EXA_API_KEY` (optional) — powers both `search_web` (Exa `/search`) and
+  `fetch_website` (Exa `/contents`). When unset both tools return an
+  `"unavailable"` error instead of throwing, so the agent keeps working
+  without proactive research.
 - `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — when unset, the
   email-capture endpoint logs a warning and skips the send so local dev
   works without a Resend account. The full LCA Resend pipeline (PGMQ →

@@ -2,8 +2,9 @@
  * Chat API Route — wraps the durable chat workflow.
  *
  * Pattern (WDK v4):
- *   - The workflow itself lives in `src/lib/agent/chat-workflow.ts`
- *     (`'use workflow'` directive inside the function body).
+ *   - The workflow itself lives in `src/lib/agent/chat/index.ts`
+ *     (`'use workflow'` directive inside the function body). Its durable
+ *     step functions live alongside it in `src/lib/agent/chat/steps.ts`.
  *   - This route is a *regular* Next.js handler. It calls `start()` from
  *     `workflow/api` to kick off a workflow run, then returns the run's
  *     readable stream.
@@ -14,7 +15,7 @@
 import { convertToModelMessages, createUIMessageStreamResponse } from 'ai'
 import type { UIMessage, UIMessageChunk } from 'ai'
 import { start } from 'workflow/api'
-import { runChatWorkflow } from '@/lib/agent/chat-workflow'
+import { runChatWorkflow } from '@/lib/agent/chat'
 import { upsertSession } from '@/lib/db/queries/sessions'
 import { saveMessage } from '@/lib/db/queries/messages'
 
