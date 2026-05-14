@@ -5,6 +5,7 @@ import { isToolUIPart, getToolName, type UIMessage } from 'ai'
 import { Loader2, Search, BookOpen, Database, UserRound, Globe } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import {
   ConnectRequestCard,
   type ConnectDraft,
@@ -61,8 +62,11 @@ interface ChatMessagesProps {
   /** Session id — needed so inline tool-cards (e.g. ConnectRequestCard)
    *  can POST to their endpoints. */
   sessionId: string | null
-  /** Optional inline element rendered after the last message — used for the
-   *  end-of-conversation email capture card so it scrolls with the chat. */
+  /** Send a synthetic user turn from an inline UI control — e.g. the
+   *  "Connect me" button rendered by propose_lca_connect. */
+  onQuickReply: (text: string) => void
+  /** Optional inline element rendered after the last message so it scrolls
+   *  with the chat (e.g. the intro suggestion pills on a fresh session). */
   footer?: React.ReactNode
 }
 
@@ -70,12 +74,13 @@ export function ChatMessages({
   messages,
   isStreaming,
   sessionId,
+  onQuickReply,
   footer,
 }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom as messages arrive — and when the footer slot
-  // appears, so the email-capture card lands in view.
+  // appears, so any inline trailing card lands in view.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isStreaming, footer])
@@ -94,8 +99,15 @@ export function ChatMessages({
 
   return (
     <div className="flex flex-col gap-4 px-4 py-4">
-      {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} sessionId={sessionId} />
+      {messages.map((message, i) => (
+        <MessageBubble
+          key={message.id}
+          message={message}
+          sessionId={sessionId}
+          isLatest={i === messages.length - 1}
+          isStreaming={isStreaming}
+          onQuickReply={onQuickReply}
+        />
       ))}
 
       {/* Streaming indicator — shown between last message and the bottom */}
@@ -116,9 +128,15 @@ export function ChatMessages({
 function MessageBubble({
   message,
   sessionId,
+  isLatest,
+  isStreaming,
+  onQuickReply,
 }: {
   message: UIMessage
   sessionId: string | null
+  isLatest: boolean
+  isStreaming: boolean
+  onQuickReply: (text: string) => void
 }) {
   const isUser = message.role === 'user'
 
@@ -168,6 +186,30 @@ function MessageBubble({
                 <div key={i} className="w-full">
                   <ConnectRequestCard sessionId={sessionId} draft={draft} />
                 </div>
+              )
+            }
+
+            // propose_lca_connect is a UI signal — render a one-click
+            // "Connect me" button under the assistant tee-up. Show only
+            // on the latest message: once the visitor replies (or the
+            // agent moves on to offer_lca_connect), a newer message
+            // exists and this branch stops rendering. No pending chip —
+            // the tee-up text itself is the cue while we wait.
+            if (toolName === 'propose_lca_connect') {
+              if (part.state !== 'output-available' || !isLatest) return null
+              return (
+                <Button
+                  key={i}
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="gap-1.5"
+                  disabled={isStreaming}
+                  onClick={() => onQuickReply('connect me')}
+                >
+                  <UserRound className="h-3.5 w-3.5" />
+                  Connect me
+                </Button>
               )
             }
 

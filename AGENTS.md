@@ -20,8 +20,8 @@ This is a time-boxed learning exercise.
 (`supabase.auth.signInAnonymously()`) on first page load — that gives them a
 real `auth.users` row with `is_anonymous = true`. The chat session id (used
 by WorkflowChatTransport, `sessions.id`, and the FK on `messages` /
-`visitor_facts` / `email_captures`) is the auth user id. RLS is still open
-to anon + authenticated for the spike — see "Conventions" below.
+`visitor_facts`) is the auth user id. RLS is still open to anon +
+authenticated for the spike — see "Conventions" below.
 
 ## Stack
 
@@ -93,13 +93,6 @@ to anon + authenticated for the spike — see "Conventions" below.
   auth cookie. Anonymous sign-ins must be enabled in
   `supabase/config.toml` (`enable_anonymous_sign_ins = true`) and in the
   Supabase dashboard for any deployed environment.
-- **Email capture:** After ~5 minutes of chat inactivity (and at least one
-  back-and-forth), `chat-interface.tsx` renders an inline
-  `<EmailCaptureCard>` styled like an assistant bubble. Submit posts to
-  `/api/email-capture`, which loads the transcript, summarises it via
-  `generateText` against the AI Gateway, and writes a row to
-  `email_captures`. The CTA link is intentionally a placeholder
-  (latecheckout.agency) — swap it for the real sign-up URL once one exists.
 - **Knowledge base:** The agent may ONLY state facts about LCA that it retrieves via
   `retrieve_lca_knowledge`. Curated content lives in the `public.lca_knowledge` table
   and is searched via Postgres full-text search (`search_lca_knowledge(q, k)` SQL
@@ -115,7 +108,7 @@ src/
   app/
     api/chat/route.ts          ← DurableAgent endpoint ('use workflow')
     api/sessions/route.ts      ← session init (writes user_id from auth)
-    api/email-capture/route.ts ← idle-timeout email capture + LLM-summary
+    api/connect-request/route.ts ← visitor-initiated intro email to LCA
     api/visitor-facts/[id]/    ← facts CRUD
   lib/
     agent/
@@ -135,7 +128,7 @@ src/
   types/database.ts            ← thin re-export of generated helpers
   components/
     chat-interface.tsx         ← root client component, WorkflowChatTransport
-    email-capture-card.tsx     ← end-of-conversation email capture + sign-up CTA
+    connect-request-card.tsx   ← inline intro-request form (rendered by offer_lca_connect)
     visitor-facts-panel.tsx    ← the "What LCA knows" panel
 supabase/
   config.toml                  ← supabase CLI config (schema_paths → ./schemas/*.sql)
@@ -216,12 +209,13 @@ Copy `.env.local.example` to `.env.local` and fill in:
   `fetch_website` (Exa `/contents`). When unset both tools return an
   `"unavailable"` error instead of throwing, so the agent keeps working
   without proactive research.
-- `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — when unset, the
-  email-capture endpoint logs a warning and skips the send so local dev
+- `RESEND_API_KEY` (optional) + `RESEND_FROM_EMAIL` — powers
+  `/api/connect-request` (visitor-initiated intro emails to LCA). When
+  unset, the endpoint logs a warning and skips the send so local dev
   works without a Resend account. The full LCA Resend pipeline (PGMQ →
   cron → edge function) is **not** mirrored here on purpose: this spike
-  calls Resend directly via `fetch` from `/api/email-capture` with the
-  key in the server-only env. Don't replicate that direct-fetch pattern
-  in the LCA monorepo.
+  calls Resend directly via `fetch` from the connect-request route with
+  the key in the server-only env. Don't replicate that direct-fetch
+  pattern in the LCA monorepo.
 - For Workflow DevKit local dev: the Next dev server runs the executor in-process
   via the `withWorkflow()` SWC plugin; no separate `npx workflow dev` needed.

@@ -68,6 +68,7 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
       fetch_website: makeFetchWebsiteTool(),
       search_web: makeSearchWebTool(),
       save_visitor_fact: makeSaveVisitorFactTool(chatId),
+      propose_lca_connect: makeProposeLcaConnectTool(),
       offer_lca_connect: makeOfferLcaConnectTool(chatId),
     },
     onFinish: async ({ text }) => {
@@ -227,6 +228,31 @@ function makeSearchWebTool() {
         ),
     }),
     execute: async ({ query }) => searchWeb(query),
+  })
+}
+
+function makeProposeLcaConnectTool() {
+  return tool({
+    description:
+      'Signal that you are *teeing up* the offer to connect the visitor to a ' +
+      'human at LCA. Call this in the SAME turn that you ask the visitor ' +
+      '"Want me to set that up?" (or similar). The UI renders a "Connect me" ' +
+      'button beneath your reply so the visitor can confirm in one click — ' +
+      'clicking it sends the message "connect me", which is your cue to call ' +
+      'offer_lca_connect on the next turn. No email is drafted by this tool; ' +
+      'it is a UI signal only. Do NOT call this in the same turn as ' +
+      'offer_lca_connect (the inline form is shown then, button is redundant). ' +
+      'Only call when you are explicitly proposing a follow-up — not as a ' +
+      'generic conversational close.',
+    inputSchema: z.object({
+      reason: z
+        .string()
+        .describe(
+          'One-line reason this moment justifies proposing a connect — same ' +
+            'shape as offer_lca_connect.reason. Used for telemetry / debug only.',
+        ),
+    }),
+    execute: async ({ reason }) => ({ proposed: true as const, reason }),
   })
 }
 
