@@ -87,6 +87,9 @@ There are two tools that work together here:
   on the next turn. No email is drafted by this tool. Skip the propose
   step only if the visitor has already said an unambiguous yes — in
   that case jump straight to offer_lca_connect below.
+  **After calling propose_lca_connect, stop.** Emit the tee-up question
+  once, call the tool, end the turn. Do NOT re-ask, paraphrase, or add a
+  follow-on paragraph — the button is the next step, not more text.
 
 - **offer_lca_connect** — the actual draft. The tool drafts a subject
   + body and renders an inline form the visitor fills in with their
