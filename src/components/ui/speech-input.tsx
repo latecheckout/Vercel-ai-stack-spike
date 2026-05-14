@@ -380,8 +380,7 @@ const SpeechInputPreview = forwardRef<HTMLDivElement, SpeechInputPreviewProps>(
     return (
       <div
         ref={ref}
-        // @ts-expect-error inert is not yet in React types
-        inert={speechInput.isConnected ? undefined : ""}
+        inert={!speechInput.isConnected}
         className={cn(
           "relative flex h-8 flex-shrink-0 items-center overflow-hidden text-sm transition-[opacity,transform,width] duration-200 ease-out",
           showPlaceholder
@@ -425,8 +424,7 @@ const SpeechInputCancelButton = forwardRef<
     <Button
       ref={ref}
       variant={variant}
-      // @ts-expect-error inert is not yet in React types
-      inert={speechInput.isConnected ? undefined : ""}
+      inert={!speechInput.isConnected}
       onClick={(e) => {
         speechInput.cancel()
         onClick?.(e)

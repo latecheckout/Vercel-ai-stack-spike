@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
-import { Loader2, Search, BookOpen, Database, UserRound } from 'lucide-react'
+import { Loader2, Search, BookOpen, Database, UserRound, Globe } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 import {
@@ -10,12 +10,49 @@ import {
   type ConnectDraft,
 } from '@/components/connect-request-card'
 
-// Tool call display metadata
-const TOOL_META: Record<string, { label: string; Icon: React.ComponentType<{ className?: string }> }> = {
-  research_visitor: { label: 'Reading your site…', Icon: Search },
-  retrieve_lca_knowledge: { label: 'Checking LCA knowledge base…', Icon: BookOpen },
-  save_visitor_fact: { label: 'Saving fact…', Icon: Database },
-  offer_lca_connect: { label: 'Drafting an intro…', Icon: UserRound },
+// Tool call display metadata. `getLabel` receives `part.input` (which may be
+// partial during input-streaming) and returns the pending label including the
+// trailing ellipsis — the render swaps that for ' ✓' once the call completes.
+const TOOL_META: Record<string, {
+  Icon: React.ComponentType<{ className?: string }>
+  getLabel: (input: unknown) => string
+}> = {
+  retrieve_lca_knowledge: {
+    Icon: BookOpen,
+    getLabel: () => 'Checking LCA knowledge base…',
+  },
+  save_visitor_fact: {
+    Icon: Database,
+    getLabel: () => 'Saving fact…',
+  },
+  offer_lca_connect: {
+    Icon: UserRound,
+    getLabel: () => 'Drafting an intro…',
+  },
+  search_web: {
+    Icon: Search,
+    getLabel: (input) => {
+      const query = (input as { query?: string } | null)?.query
+      return query ? `Searching for "${query}"…` : 'Searching the web…'
+    },
+  },
+  fetch_website: {
+    Icon: Globe,
+    getLabel: (input) => {
+      const url = (input as { url?: string } | null)?.url
+      const host = safeHostname(url)
+      return host ? `Reading ${host}…` : 'Reading website…'
+    },
+  },
+}
+
+function safeHostname(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return null
+  }
 }
 
 interface ChatMessagesProps {
@@ -137,9 +174,10 @@ function MessageBubble({
             const meta = TOOL_META[toolName]
             if (!meta) return null
 
-            const { label, Icon } = meta
+            const { Icon, getLabel } = meta
             const isPending =
               part.state === 'input-streaming' || part.state === 'input-available'
+            const label = getLabel(part.input)
 
             return (
               <div
