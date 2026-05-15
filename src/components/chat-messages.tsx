@@ -140,6 +140,15 @@ function MessageBubble({
 }) {
   const isUser = message.role === 'user'
 
+  // Moderation: when the server emits a `data-redact` part, replace every
+  // prior text + tool part with just the refusal bubble. The DB already
+  // holds the refusal as the persisted assistant message, so a refresh
+  // renders the same thing via the normal text-part path.
+  const redactPart = message.parts.find(
+    (p): p is { type: 'data-redact'; data: { text: string } } =>
+      p.type === 'data-redact',
+  )
+
   return (
     <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start')}>
       {/* Role label */}
@@ -149,7 +158,16 @@ function MessageBubble({
 
       {/* Message parts */}
       <div className={cn('flex flex-col gap-2', isUser ? 'items-end' : 'items-start', 'max-w-[85%]')}>
-        {message.parts.map((part, i) => {
+        {redactPart ? (
+          <div
+            className={cn(
+              'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+              'bg-muted rounded-bl-sm',
+            )}
+          >
+            <Streamdown>{redactPart.data.text}</Streamdown>
+          </div>
+        ) : message.parts.map((part, i) => {
           if (part.type === 'text') {
             return (
               <div
