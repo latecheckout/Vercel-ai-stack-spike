@@ -11,9 +11,8 @@ import { createClient } from '@/lib/supabase/server'
  * with optional markdown — rendered to HTML at send time.
  *
  * No DB persistence on this iteration — the email itself is the record.
- * If/when we want history, extend `email_captures` (add nullable
- * subject/body/recipient columns) or add a sibling `connect_requests`
- * table; both options keep RLS open + anon-friendly for the spike.
+ * If/when we want history, add a `connect_requests` table; keep RLS open +
+ * anon-friendly to match the rest of the spike.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -48,9 +47,9 @@ export async function POST(req: Request) {
     const cleanSubject = subject.trim().slice(0, MAX_SUBJECT)
     const cleanBody = emailBody.trim().slice(0, MAX_BODY)
 
-    // Touch auth so we share the same session-id-is-user-id assumption as
-    // /api/email-capture. Currently unused beyond that — keeps the door
-    // open for tying the send to a user_id if we add persistence later.
+    // Touch auth so we share the session-id-is-user-id assumption used
+    // elsewhere. Currently unused beyond that — keeps the door open for
+    // tying the send to a user_id if we add persistence later.
     const supabase = await createClient()
     await supabase.auth.getUser()
 
@@ -78,7 +77,7 @@ async function sendConnectEmail(input: {
 
   if (!apiKey) {
     // Local dev without Resend wired up — log loudly so the omission is
-    // visible, but don't 500 (mirrors the email-capture behaviour).
+    // visible, but don't 500.
     console.warn(
       '[connect-request] RESEND_API_KEY unset — skipping send. Payload:',
       input,
@@ -112,8 +111,8 @@ async function sendConnectEmail(input: {
   }
 }
 
-// Minimal markdown → HTML, same idea as the recap renderer in
-// `email-capture/route.ts`. Handles bullets, bold, paragraphs.
+// Minimal markdown → HTML so the intro body reads well in mail clients
+// without pulling in a full markdown lib. Handles bullets, bold, paragraphs.
 function renderBodyHtml(text: string, visitorEmail: string): string {
   const escape = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

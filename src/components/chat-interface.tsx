@@ -3,12 +3,11 @@
 import { useChat } from '@ai-sdk/react'
 import { WorkflowChatTransport } from '@workflow/ai'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { UIMessage } from 'ai'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
-import { EmailCaptureCard } from '@/components/email-capture-card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatSession } from '@/hooks/use-chat-session'
 
@@ -100,17 +99,6 @@ function IntroSuggestions({
   )
 }
 
-// Time of inactivity (in ms) after which the email-capture card pops up.
-// Picked at 5 minutes per the product brief; drop this to ~60s locally
-// when you're iterating on the card UX.
-const EMAIL_CAPTURE_IDLE_MS = 5 * 60 * 1000
-
-// Minimum messages before we even consider showing the card — we want at
-// least one back-and-forth so the recap has substance.
-const EMAIL_CAPTURE_MIN_MESSAGES = 2
-
-type CaptureState = 'hidden' | 'shown' | 'submitted' | 'dismissed'
-
 function ChatInterfaceInner() {
   const { sessionId, resetSession } = useChatSession()
 
@@ -173,53 +161,6 @@ function ChatInterfaceInner() {
     setMessages([buildIntroMessage()])
   }, [sessionId, activeRunId, messages.length, setMessages])
 
-  // ─── Email-capture inactivity detection ─────────────────────────────────
-  //
-  // After EMAIL_CAPTURE_IDLE_MS without a new message (and once we have a
-  // real conversation going), surface the recap+CTA card. Once the visitor
-  // submits, dismisses, or sends a new message, we don't pop it again for
-  // the rest of the session — re-prompting feels naggy.
-  const [captureState, setCaptureState] = useState<CaptureState>('hidden')
-  const messageCount = messages.length
-
-  // Detect "new message arrived while card was shown" by comparing the
-  // current message count to whatever we last saw. We can't fold this into
-  // the timer effect: that one has captureState in its deps, and a transition
-  // hidden → shown would re-run it and instantly dismiss the freshly-opened
-  // card before the user ever sees it.
-  const prevMessageCountRef = useRef(messageCount)
-  useEffect(() => {
-    const prev = prevMessageCountRef.current
-    prevMessageCountRef.current = messageCount
-    if (captureState === 'shown' && messageCount > prev) {
-      setCaptureState('dismissed')
-    }
-  }, [messageCount, captureState])
-
-  useEffect(() => {
-    if (
-      captureState !== 'hidden' ||
-      messageCount < EMAIL_CAPTURE_MIN_MESSAGES ||
-      isStreaming
-    ) {
-      return
-    }
-
-    const timer = setTimeout(() => {
-      setCaptureState('shown')
-    }, EMAIL_CAPTURE_IDLE_MS)
-
-    return () => clearTimeout(timer)
-  }, [messageCount, isStreaming, captureState])
-
-  const handleEmailSubmitted = useCallback(() => {
-    setCaptureState('submitted')
-  }, [])
-
-  const handleEmailDismissed = useCallback(() => {
-    setCaptureState('dismissed')
-  }, [])
-
   const handleSubmit = () => {
     if (!input.trim() || isStreaming || !sessionId) return
     sendMessage({ text: input })
@@ -227,6 +168,18 @@ function ChatInterfaceInner() {
   }
 
   const handleSuggestionPick = useCallback(
+    (text: string) => {
+      if (isStreaming || !sessionId) return
+      sendMessage({ text })
+    },
+    [isStreaming, sessionId, sendMessage],
+  )
+
+  // Inline quick-reply: invoked by `propose_lca_connect`'s "Connect me"
+  // button. Same gating as the suggestion pills — drop the click if we're
+  // still streaming or have no session yet, so a double-click can't queue
+  // a duplicate turn.
+  const handleQuickReply = useCallback(
     (text: string) => {
       if (isStreaming || !sessionId) return
       sendMessage({ text })
@@ -287,18 +240,14 @@ function ChatInterfaceInner() {
 
   // "Start over" path: by the time this fires the server has dropped the
   // entire session row (facts + transcript + summary cascaded off). We
-  // wipe the local chat surface, drop any in-flight run id, reset the
-  // email-capture timer, and rotate the anonymous auth user so the next
-  // message lands in a brand-new session id.
+  // wipe the local chat surface, drop any in-flight run id, and rotate
+  // the anonymous auth user so the next message lands in a brand-new
+  // session id.
   const handleHardReset = useCallback(async () => {
     setMessages([])
     localStorage.removeItem(RUN_ID_KEY)
-    setCaptureState('hidden')
-    prevMessageCountRef.current = 0
     await resetSession()
   }, [setMessages, resetSession])
-
-  const showCapture = captureState === 'shown' || captureState === 'submitted'
 
   return (
     <div className="flex h-full">
@@ -309,14 +258,9 @@ function ChatInterfaceInner() {
             messages={messages}
             isStreaming={isStreaming}
             sessionId={sessionId}
+            onQuickReply={handleQuickReply}
             footer={
-              showCapture && sessionId ? (
-                <EmailCaptureCard
-                  sessionId={sessionId}
-                  onSubmitted={handleEmailSubmitted}
-                  onDismiss={handleEmailDismissed}
-                />
-              ) : showSuggestions ? (
+              showSuggestions ? (
                 <IntroSuggestions
                   onPick={handleSuggestionPick}
                   disabled={isStreaming}
