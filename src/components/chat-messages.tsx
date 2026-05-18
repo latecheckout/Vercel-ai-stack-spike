@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
-import { Loader2, Search, BookOpen, Database, UserRound, Globe } from 'lucide-react'
+import { Loader2, Search, BookOpen, Database, UserRound, Globe, ShieldAlert } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -159,14 +159,24 @@ function MessageBubble({
       {/* Message parts */}
       <div className={cn('flex flex-col gap-2', isUser ? 'items-end' : 'items-start', 'max-w-[85%]')}>
         {redactPart ? (
-          <div
-            className={cn(
-              'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
-              'bg-muted rounded-bl-sm',
-            )}
-          >
-            <Streamdown>{redactPart.data.text}</Streamdown>
-          </div>
+          <>
+            <div
+              className={cn(
+                'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+                'bg-muted rounded-bl-sm',
+              )}
+            >
+              <Streamdown>{redactPart.data.text}</Streamdown>
+            </div>
+            <span
+              className="inline-flex items-center gap-1 px-1 text-[10px] text-muted-foreground"
+              title="Blocked by OpenAI moderation gate — this is an API-level refusal, not the LLM declining on its own."
+              aria-label="Blocked by OpenAI moderation gate"
+            >
+              <ShieldAlert className="h-3 w-3" />
+              moderation
+            </span>
+          </>
         ) : message.parts.map((part, i) => {
           if (part.type === 'text') {
             return (

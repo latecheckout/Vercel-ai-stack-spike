@@ -94,16 +94,20 @@ function gateStreamOnModeration(opts: {
     async start(controller) {
       let flagged = false
 
+      // Acquire the reader first — once the stream is locked to a reader,
+      // only the reader can cancel it. Calling agentReadable.cancel() from
+      // outside would reject with TypeError and leave the read loop hung
+      // waiting for chunks that will never arrive.
+      const reader = agentReadable.getReader()
+
       const moderationWatcher = moderationPromise.then(async (result) => {
         if (!result.flagged) return
         flagged = true
         await Promise.allSettled([
           cancelRun(),
-          agentReadable.cancel('moderation-flagged'),
+          reader.cancel('moderation-flagged'),
         ])
       })
-
-      const reader = agentReadable.getReader()
       try {
         while (true) {
           let chunk: ReadableStreamReadResult<UIMessageChunk>
