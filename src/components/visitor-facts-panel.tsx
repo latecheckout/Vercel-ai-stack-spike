@@ -18,6 +18,7 @@ import { Streamdown } from 'streamdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { IcpFitCard } from '@/components/icp-fit-card'
 import { useVisitorFacts, useDeleteVisitorFact } from '@/hooks/use-visitor-facts'
 import {
   useSessionState,
@@ -170,6 +171,8 @@ export function VisitorFactsPanel({
           />
         </div>
       </div>
+
+      <IcpFitCard sessionId={sessionId} />
 
       <ScrollArea className="flex-1">
         <div className="space-y-2 p-4">

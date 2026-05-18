@@ -98,6 +98,7 @@ for the full template.
 | `NEXT_PUBLIC_SUPABASE_URL`      | `supabase status` → API URL (`http://127.0.0.1:54321`) | Browser + server Supabase clients |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `supabase status` → anon key                      | RLS-enforced reads/writes         |
 | `SUPABASE_SERVICE_ROLE_KEY`     | `supabase status` → service_role key              | Admin client (no admin routes yet)|
+| `NEXT_PUBLIC_SHOW_ICP_PANEL`    | Local toggle — set to `true` in dev only          | Renders the internal ICP-fit card |
 
 ---
 
@@ -209,6 +210,36 @@ for the why.
 | `pnpm db:gen-types` produces an empty file                   | Local Supabase isn't running. Run `supabase start` first. |
 | Chat stream just hangs after sending a message               | Check the dev terminal — the workflow chunk likely threw before the first chunk reached the client. AI Gateway 401 (missing/invalid `AI_GATEWAY_API_KEY`) is the usual culprit. |
 | TypeScript can't find `'@/lib/supabase/server'`              | Run `pnpm db:gen-types` and restart the TS server. |
+
+---
+
+## ICP fit scoring (internal)
+
+After every assistant turn, a parallel evaluator scores the visitor against
+LCA's Ideal Customer Profile. It's not in the user-facing flow — it's an
+internal read on inbound lead quality.
+
+- **Trigger:** `evaluateIcpStep` runs from the workflow's `onFinish` once per
+  assistant reply. It picks up any visitor facts that were saved during the
+  turn, so per-message and per-fact-save updates are both covered by the
+  same hook.
+- **Storage:** one row per evaluation in `public.icp_evaluations` (history,
+  not last-write-wins — handy for inspecting how a visitor's fit shifted
+  as the conversation progressed).
+- **Surface:** a small card at the top of the right-hand panel — tier
+  badge, score (0–100), per-signal breakdown (funding / stage / ambition /
+  engagement fit), anti-signals, and a one-line "next step" hint.
+- **Visibility:** **hidden by default**. Set `NEXT_PUBLIC_SHOW_ICP_PANEL=true`
+  in `.env.local` to render the card in local dev. The server-side eval
+  runs and writes to Supabase regardless of this flag; only the UI surface
+  is gated. (This will switch to a `NODE_ENV === 'development'` gate
+  later — using an env var for now so it can be flipped per-environment
+  without a code change.)
+
+The ICP prompt is in [`src/lib/agent/icp.ts`](./src/lib/agent/icp.ts); the
+schema (zod + Postgres) lives in
+[`supabase/schemas/006-icp-evaluations.sql`](./supabase/schemas/006-icp-evaluations.sql)
+and [`src/lib/db/queries/icp-evaluations.ts`](./src/lib/db/queries/icp-evaluations.ts).
 
 ---
 

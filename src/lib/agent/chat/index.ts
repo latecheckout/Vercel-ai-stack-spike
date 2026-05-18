@@ -24,6 +24,7 @@ import {
   loadVisitorFacts,
   loadSessionState,
   extendSummaryStep,
+  evaluateIcpStep,
   fetchPublicWebsite,
   searchWeb,
   persistVisitorFact,
@@ -73,14 +74,20 @@ export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) 
     },
     onFinish: async ({ text }) => {
       await persistAssistantMessage(chatId, text)
-      if (isSummaryMode && latestUserText.length > 0 && text.length > 0) {
-        await extendSummaryStep(
-          chatId,
-          sessionState.summary,
-          latestUserText,
-          text,
-        )
-      }
+      // Run summary extension (when in summary mode) and ICP evaluation in
+      // parallel — both are independent post-turn updates that the user
+      // doesn't see in this turn's stream.
+      await Promise.all([
+        isSummaryMode && latestUserText.length > 0 && text.length > 0
+          ? extendSummaryStep(
+              chatId,
+              sessionState.summary,
+              latestUserText,
+              text,
+            )
+          : Promise.resolve(),
+        evaluateIcpStep(chatId),
+      ])
     },
   })
 

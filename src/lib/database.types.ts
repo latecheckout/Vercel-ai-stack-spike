@@ -69,6 +69,47 @@ export type Database = {
           },
         ]
       }
+      icp_evaluations: {
+        Row: {
+          created_at: string
+          id: string
+          rationale: string
+          recommendation: string
+          score: number
+          session_id: string
+          signals: Json
+          tier: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          rationale?: string
+          recommendation?: string
+          score: number
+          session_id: string
+          signals?: Json
+          tier: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          rationale?: string
+          recommendation?: string
+          score?: number
+          session_id?: string
+          signals?: Json
+          tier?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "icp_evaluations_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       lca_knowledge: {
         Row: {
           category: string
