@@ -12,7 +12,11 @@
  *     reconnect to an interrupted stream via `/api/chat/[runId]/stream`.
  */
 
-import { convertToModelMessages, createUIMessageStreamResponse } from 'ai'
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+} from 'ai'
 import type { UIMessage, UIMessageChunk } from 'ai'
 import { start } from 'workflow/api'
 import { runChatWorkflow } from '@/lib/agent/chat'
@@ -45,108 +49,38 @@ export async function POST(req: Request) {
     await saveMessage(chatId, 'user', lastUserText).catch(() => undefined)
   }
 
-  // Kick off moderation in parallel with workflow startup. Moderation lives
+  // Moderate before kicking off the workflow. Omni-moderation is fast
+  // (~200–400ms) so a sequential check is cheaper than the race-condition
+  // surface of cancelling a partially-streamed agent run. Moderation lives
   // here (route handler) rather than inside the workflow because the flow
   // worker is stripped down (no `fetch`, no `AbortSignal`) — see AGENTS.md.
-  // From here we can `run.cancel()` the workflow and gate the readable.
-  const moderationPromise = lastUserText
-    ? moderateText(lastUserText)
-    : Promise.resolve({ flagged: false as const })
+  const moderation = lastUserText
+    ? await moderateText(lastUserText)
+    : { flagged: false as const }
+
+  if (moderation.flagged) {
+    await saveMessage(chatId, 'assistant', MODERATION_REFUSAL_TEXT).catch(
+      () => undefined,
+    )
+    return createUIMessageStreamResponse({
+      stream: createUIMessageStream({
+        execute: ({ writer }) => {
+          const id = 'moderation-refusal'
+          writer.write({ type: 'text-start', id })
+          writer.write({ type: 'text-delta', id, delta: MODERATION_REFUSAL_TEXT })
+          writer.write({ type: 'text-end', id })
+        },
+      }),
+    })
+  }
 
   const modelMessages = await convertToModelMessages(uiMessages)
   const run = await start(runChatWorkflow, [chatId, modelMessages])
-  const agentReadable = run.getReadable<UIMessageChunk>()
-
-  const gatedStream = gateStreamOnModeration({
-    chatId,
-    agentReadable,
-    moderationPromise,
-    cancelRun: () => run.cancel(),
-  })
 
   return createUIMessageStreamResponse({
-    stream: gatedStream,
+    stream: run.getReadable<UIMessageChunk>(),
     headers: {
       'x-workflow-run-id': run.runId,
-    },
-  })
-}
-
-/**
- * Forwards agent chunks until moderation flags the user message. On flag:
- *   1. Stop forwarding further agent chunks.
- *   2. Cancel the workflow run + the agent readable (best-effort).
- *   3. Emit a `data-redact` chunk so the client renderer replaces any
- *      partial text already on screen with the refusal.
- *   4. Persist the refusal to DB as the assistant's reply for this turn —
- *      the workflow's own `persistAssistantMessage` step may or may not
- *      fire depending on cancel timing; this is the source of truth.
- */
-function gateStreamOnModeration(opts: {
-  chatId: string
-  agentReadable: ReadableStream<UIMessageChunk>
-  moderationPromise: Promise<{ flagged: boolean }>
-  cancelRun: () => Promise<unknown>
-}): ReadableStream<UIMessageChunk> {
-  const { chatId, agentReadable, moderationPromise, cancelRun } = opts
-
-  return new ReadableStream<UIMessageChunk>({
-    async start(controller) {
-      let flagged = false
-
-      // Acquire the reader first — once the stream is locked to a reader,
-      // only the reader can cancel it. Calling agentReadable.cancel() from
-      // outside would reject with TypeError and leave the read loop hung
-      // waiting for chunks that will never arrive.
-      const reader = agentReadable.getReader()
-
-      const moderationWatcher = moderationPromise.then(async (result) => {
-        if (!result.flagged) return
-        flagged = true
-        await Promise.allSettled([
-          cancelRun(),
-          reader.cancel('moderation-flagged'),
-        ])
-      })
-      try {
-        while (true) {
-          let chunk: ReadableStreamReadResult<UIMessageChunk>
-          try {
-            chunk = await reader.read()
-          } catch {
-            // agentReadable.cancel() above can reject pending reads — treat
-            // as end-of-stream so we proceed to the redact emission.
-            break
-          }
-          if (chunk.done) break
-          if (flagged) continue
-          controller.enqueue(chunk.value)
-        }
-      } finally {
-        reader.releaseLock()
-      }
-
-      // Ensure we've awaited the final moderation outcome before deciding
-      // whether to redact — the read loop may have exited because the agent
-      // finished cleanly before moderation came back.
-      await moderationWatcher
-
-      if (flagged) {
-        controller.enqueue({
-          type: 'data-redact',
-          data: { text: MODERATION_REFUSAL_TEXT },
-          transient: false,
-        } as UIMessageChunk)
-        controller.enqueue({ type: 'finish' } as UIMessageChunk)
-        await saveMessage(chatId, 'assistant', MODERATION_REFUSAL_TEXT).catch(
-          () => undefined,
-        )
-      }
-
-      controller.close()
-    },
-    cancel(reason) {
-      agentReadable.cancel(reason).catch(() => undefined)
     },
   })
 }

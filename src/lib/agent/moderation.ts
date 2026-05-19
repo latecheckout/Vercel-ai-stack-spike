@@ -1,10 +1,11 @@
 /**
  * OpenAI moderation gate for inbound user messages.
  *
- * Runs in parallel with the workflow stream from the chat route handler
- * (not from inside the workflow — the flow worker has no `fetch`/AbortSignal,
- * see AGENTS.md). On a positive classification the route cancels the run,
- * stops forwarding agent chunks, and emits a redact signal to the client.
+ * Awaited before the workflow starts from the chat route handler — runs
+ * here (not inside the workflow) because the flow worker is stripped of
+ * `fetch`/AbortSignal, see AGENTS.md. On a positive classification the
+ * route returns a single-message refusal stream and never invokes the
+ * workflow at all.
  *
  * Fail-open: if `OPENAI_API_KEY` is missing or the call errors, we treat the
  * message as clean. The spike already follows this pattern for Exa/Resend —
