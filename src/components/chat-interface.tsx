@@ -8,6 +8,7 @@ import type { UIMessage } from 'ai'
 import { ChatMessages } from '@/components/chat-messages'
 import { ChatInput } from '@/components/chat-input'
 import { VisitorFactsPanel } from '@/components/visitor-facts-panel'
+import { SuperuserPanel } from '@/components/superuser-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatSession } from '@/hooks/use-chat-session'
 
@@ -24,12 +25,18 @@ function createQueryClient() {
  * ChatInterface — the root 'use client' component.
  *
  * Layout:
- *   ┌──────────────────────────┬──────────────────┐
- *   │  Chat messages (scroll)  │  Visitor facts   │
- *   │                          │  panel           │
- *   ├──────────────────────────┴──────────────────┤
- *   │  Chat input                                 │
- *   └─────────────────────────────────────────────┘
+ *   ┌───────────┬──────────────────────┬──────────────────┐
+ *   │ Superuser │ Chat messages        │  Visitor facts   │
+ *   │ panel     │ (scroll)             │  panel           │
+ *   │ (toggle)  │                      │                  │
+ *   │           ├──────────────────────┴──────────────────┤
+ *   │           │ Chat input                              │
+ *   └───────────┴─────────────────────────────────────────┘
+ *
+ * The leftmost column is the collapsible SuperuserPanel (internal/dev
+ * tooling — currently the ICP-fit card). It's gated by
+ * NEXT_PUBLIC_SHOW_ICP_PANEL and opened via the shield icon in the page
+ * header; collapses to zero width when closed.
  *
  * WorkflowChatTransport replaces the default useChat fetch transport.
  * It handles:
@@ -251,6 +258,8 @@ function ChatInterfaceInner() {
 
   return (
     <div className="flex h-full">
+      <SuperuserPanel sessionId={sessionId} />
+
       {/* Chat column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <ScrollArea className="flex-1">

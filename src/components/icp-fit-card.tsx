@@ -6,26 +6,17 @@ import { useIcpScore } from '@/hooks/use-icp-score'
 import { cn } from '@/lib/utils'
 import type { IcpEvaluation, IcpTier } from '@/lib/db/queries/icp-evaluations'
 
-// Hidden by default — the panel is for internal/dev visibility only. Set
-// NEXT_PUBLIC_SHOW_ICP_PANEL=true in .env.local to render it. Read once at
-// module load: `NEXT_PUBLIC_*` is inlined by the bundler at build time, so
-// flipping the flag requires a restart of `pnpm dev`. This will eventually
-// be replaced by a NODE_ENV-based gate.
-const ICP_PANEL_ENABLED = process.env.NEXT_PUBLIC_SHOW_ICP_PANEL === 'true'
-
 /**
- * Top-of-panel card showing how well the current visitor matches LCA's
- * Ideal Customer Profile. Updated once per assistant turn by the
- * `evaluateIcpStep` step that runs in the workflow's `onFinish`. Polls
- * `/api/icp/[sessionId]` while a session is active.
+ * Card showing how well the current visitor matches LCA's Ideal Customer
+ * Profile. Updated once per assistant turn by the `evaluateIcpStep` step
+ * that runs in the workflow's `onFinish`. Polls `/api/icp/[sessionId]`
+ * while a session is active.
  *
- * The outer component is a hook-free gate so the polling hook isn't even
- * invoked when the panel is disabled — saves a poll-every-3s network call
- * in production builds. The DB eval still runs server-side regardless;
- * this only hides the UI surface.
+ * Visibility is gated upstream by [[superuser-panel]], which only mounts
+ * this when `NEXT_PUBLIC_SHOW_ICP_PANEL=true` and the panel is open — so
+ * the polling hook stays dormant in production builds.
  */
 export function IcpFitCard({ sessionId }: { sessionId: string | null }) {
-  if (!ICP_PANEL_ENABLED) return null
   if (!sessionId) return null
   return <IcpFitCardContent sessionId={sessionId} />
 }
@@ -34,7 +25,7 @@ function IcpFitCardContent({ sessionId }: { sessionId: string }) {
   const { data: evaluation, isLoading } = useIcpScore(sessionId)
 
   return (
-    <div className="border-b bg-background px-4 py-3">
+    <div className="bg-background px-4 py-3">
       <div className="mb-2 flex items-center gap-1.5">
         <Target className="h-3 w-3 text-muted-foreground" />
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
