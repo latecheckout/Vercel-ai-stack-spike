@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
-export interface ConnectDraft {
+export interface ConnectOfferOutput {
   ready: boolean
   recipient?: string
   subject?: string
@@ -16,7 +16,7 @@ export interface ConnectDraft {
 
 interface ConnectRequestCardProps {
   sessionId: string
-  draft: ConnectDraft
+  draft: ConnectOfferOutput
 }
 
 /**
