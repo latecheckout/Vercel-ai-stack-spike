@@ -1,7 +1,8 @@
 -- Curated LCA content. Seeded by `pnpm db:seed-knowledge`, which scrapes
--- public pages of latecheckout.agency and writes via the service role.
--- The agent retrieves rows through the `search_lca_knowledge(q, k)` SQL
--- function below — Postgres full-text search with weighted ranking.
+-- public pages of latecheckout.agency; admins also edit it directly via
+-- /admin/knowledge. The agent retrieves rows through the
+-- `search_lca_knowledge(q, k)` SQL function below — Postgres full-text
+-- search with weighted ranking.
 create table public.lca_knowledge (
   id            uuid        primary key default gen_random_uuid(),
   title         text        not null,
@@ -10,10 +11,17 @@ create table public.lca_knowledge (
   tags          text[]      not null default '{}',
   source_url    text        unique,
   search_vector tsvector,
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  -- Audit trail. Nullable because (a) seed/scrape inserts have no auth
+  -- context and (b) historical rows from before this column existed have
+  -- no author to backfill from. `set null` on delete keeps the audit
+  -- pointer rather than cascading the row.
+  created_by    uuid        references auth.users (id) on delete set null,
+  updated_by    uuid        references auth.users (id) on delete set null
 );
 
-comment on table public.lca_knowledge is 'Curated LCA content; service-role writes only. Seeded from latecheckout.agency.';
+comment on table public.lca_knowledge is 'Curated LCA content. Admins edit via /admin/knowledge; seed script bulk-loads from latecheckout.agency.';
 
 create index lca_knowledge_category_idx on public.lca_knowledge (category);
 create index lca_knowledge_search_idx on public.lca_knowledge using gin (search_vector);
@@ -41,33 +49,41 @@ create trigger lca_knowledge_search_vector_sync
   for each row
   execute function public.lca_knowledge_refresh_search_vector();
 
+-- Stamp `updated_at` (and `updated_by` to the current auth.uid()) on every
+-- mutation. Kept separate from the search-vector trigger because that one
+-- only fires when title/content/tags change, but we want to bump
+-- updated_at even when an admin edits just the category or tags ordering.
+create or replace function public.lca_knowledge_touch_audit()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$$;
+
+create trigger lca_knowledge_touch_audit
+  before update
+  on public.lca_knowledge
+  for each row
+  execute function public.lca_knowledge_touch_audit();
+
 alter table public.lca_knowledge enable row level security;
 
--- Read-only for clients; only service_role may mutate.
+-- Reads stay open — the agent's PostgREST search call uses the anon key
+-- and we don't want to rebuild that path for admin work.
 create policy "anyone can read lca_knowledge"
   on public.lca_knowledge
   for select
   to anon, authenticated
   using (true);
 
-create policy "service can insert lca_knowledge"
-  on public.lca_knowledge
-  for insert
-  to service_role
-  with check (true);
-
-create policy "service can update lca_knowledge"
-  on public.lca_knowledge
-  for update
-  to service_role
-  using (true)
-  with check (true);
-
-create policy "service can delete lca_knowledge"
-  on public.lca_knowledge
-  for delete
-  to service_role
-  using (true);
+-- Admin-gated write policies live in 006-admins.sql, where `public.is_admin()`
+-- is declared. Schema files are applied in numeric order, so they must
+-- be colocated with (or come after) the function they reference.
+-- service_role bypasses RLS by default — used by the seed script.
 
 -- Ranked full-text search.
 --
