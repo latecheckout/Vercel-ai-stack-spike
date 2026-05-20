@@ -2,8 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import type { IcpEvaluation } from '@/lib/db/queries/icp-evaluations'
-
-const POLL_INTERVAL_MS = 3_000
+import { POLL_INTERVAL_MS } from '@/lib/config'
 
 /**
  * Polls `/api/icp/[sessionId]` for the most recent ICP evaluation. Returns

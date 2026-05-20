@@ -16,6 +16,7 @@ import { generateObject } from 'ai'
 import { z } from 'zod'
 import type { VisitorFact } from '../db/queries/visitor-facts'
 import type { DbMessage } from '../db/queries/messages'
+import { renderFactsBlock, renderMessageTranscript } from './render-context'
 
 const ICP_MODEL = 'anthropic/claude-sonnet-4.5'
 
@@ -113,19 +114,6 @@ export const IcpEvaluationSchema = z.object({
 
 export type IcpEvaluationResult = z.infer<typeof IcpEvaluationSchema>
 
-function renderFactsBlock(facts: VisitorFact[]): string {
-  if (facts.length === 0) return '(no confirmed facts yet)'
-  return facts.map((f) => `- [${f.category}] ${f.fact}`).join('\n')
-}
-
-function renderRecentMessages(messages: DbMessage[]): string {
-  if (messages.length === 0) return '(no messages yet)'
-  const tail = messages.slice(-RECENT_TURN_LIMIT)
-  return tail
-    .map((m) => `${m.role === 'user' ? 'Visitor' : 'LCA'}: ${m.content}`)
-    .join('\n\n')
-}
-
 export interface EvaluateIcpInput {
   facts: VisitorFact[]
   messages: DbMessage[]
@@ -169,7 +157,7 @@ ${renderFactsBlock(input.facts)}
 ${summaryBlock}
 
 Recent conversation (last ${RECENT_TURN_LIMIT} turns at most):
-${renderRecentMessages(input.messages)}
+${renderMessageTranscript(input.messages, RECENT_TURN_LIMIT)}
 
 Score the visitor against the ICP now.`,
   })
