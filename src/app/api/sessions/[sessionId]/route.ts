@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import {
   getSession,
+  toSessionPayload,
   updateSessionMode,
   updateSessionSummary,
   type SessionMode,
@@ -25,9 +26,7 @@ export async function GET(
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
-    return NextResponse.json({
-      session: { id: session.id, mode: session.mode, summary: session.summary },
-    })
+    return NextResponse.json({ session: toSessionPayload(session) })
   } catch (err) {
     console.error('[GET /api/sessions/[id]]', err)
     const message = err instanceof Error ? err.message : 'Unknown error'
@@ -82,20 +81,12 @@ export async function PATCH(
         const summary = await regenerateFromTranscript({ messages, facts })
         if (summary.length > 0) {
           const withSummary = await updateSessionSummary(sessionId, summary)
-          return NextResponse.json({
-            session: {
-              id: withSummary.id,
-              mode: withSummary.mode,
-              summary: withSummary.summary,
-            },
-          })
+          return NextResponse.json({ session: toSessionPayload(withSummary) })
         }
       }
     }
 
-    return NextResponse.json({
-      session: { id: updated.id, mode: updated.mode, summary: updated.summary },
-    })
+    return NextResponse.json({ session: toSessionPayload(updated) })
   } catch (err) {
     console.error('[PATCH /api/sessions/[id]]', err)
     const message = err instanceof Error ? err.message : 'Unknown error'
