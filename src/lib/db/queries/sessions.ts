@@ -6,6 +6,16 @@ import type { Tables } from '@/types/database'
 export type SessionMode = 'chat' | 'summary'
 export type Session = Omit<Tables<'sessions'>, 'mode'> & { mode: SessionMode }
 
+// The subset of session fields the API exposes. Excludes `user_id` and
+// timestamps deliberately — `user_id` is server-trusted state and the
+// timestamps aren't read by any client. Keep route handlers from
+// hand-projecting (which made it easy to leak fields by accident).
+export type SessionPayload = Pick<Session, 'id' | 'mode' | 'summary'>
+
+export function toSessionPayload(session: Session): SessionPayload {
+  return { id: session.id, mode: session.mode, summary: session.summary }
+}
+
 /**
  * Upsert a session row. Called when the chat initialises so that every
  * session_id that the agent references actually exists in the DB.

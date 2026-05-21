@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server'
-import { getSession, updateSessionSummary } from '@/lib/db/queries/sessions'
+import {
+  getSession,
+  toSessionPayload,
+  updateSessionSummary,
+} from '@/lib/db/queries/sessions'
 import { getVisitorFacts } from '@/lib/db/queries/visitor-facts'
 import { getMessages } from '@/lib/db/queries/messages'
 import {
@@ -49,9 +53,7 @@ export async function POST(
     }
 
     const updated = await updateSessionSummary(sessionId, nextSummary)
-    return NextResponse.json({
-      session: { id: updated.id, mode: updated.mode, summary: updated.summary },
-    })
+    return NextResponse.json({ session: toSessionPayload(updated) })
   } catch (err) {
     console.error('[POST /api/sessions/[id]/regenerate-summary]', err)
     const message = err instanceof Error ? err.message : 'Unknown error'
