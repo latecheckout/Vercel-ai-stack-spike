@@ -16,12 +16,26 @@ HTML-to-text server-side.
 **What it is not:** Production. Not embedded in lca.agency. No analytics.
 This is a time-boxed learning exercise.
 
-**Auth model:** Every visitor is signed in via Supabase **anonymous auth**
-(`supabase.auth.signInAnonymously()`) on first page load — that gives them a
-real `auth.users` row with `is_anonymous = true`. The chat session id (used
-by WorkflowChatTransport, `sessions.id`, and the FK on `messages` /
-`visitor_facts`) is the auth user id. RLS is still open to anon +
-authenticated for the spike — see "Conventions" below.
+**Auth model:** Two parallel auth flows.
+
+- **Visitor chat (anonymous):** every visitor is signed in via
+  `supabase.auth.signInAnonymously()` on first page load — that gives them
+  a real `auth.users` row with `is_anonymous = true`. The chat session id
+  (used by WorkflowChatTransport, `sessions.id`, and the FK on
+  `messages` / `visitor_facts`) is the auth user id. RLS on those tables
+  is permissive — see "Conventions" below.
+- **Admin (`/admin/*`, email + password):** anyone can sign up at
+  `/admin/signup`, but admin access is granted separately via a row in
+  `public.admins`. The proxy gate (`src/lib/supabase/proxy.ts`) calls
+  `public.is_admin()` via PostgREST RPC on every `/admin/*` request and
+  redirects to `/admin/login` (unauth) or `/admin/no-access` (auth but
+  not in `admins`). Write RLS on `lca_knowledge` is gated by the same
+  `public.is_admin()` function — single source of truth for "is this
+  caller privileged".
+- **Same-browser gotcha:** signing in as admin while the chat is open
+  replaces the anon session, so the chat surface starts keying onto the
+  admin's user id. Use a separate browser/incognito for admin work to
+  keep the visitor experience separate during testing.
 
 ## Stack
 
@@ -86,26 +100,40 @@ authenticated for the spike — see "Conventions" below.
   runs without the visitor's auth cookies — can still read/write. When we
   tighten this we'll need to thread a server-trusted user id into every step
   call rather than relying on `auth.uid()`.
-- **Auth (anonymous):** `useChatSession` (`src/hooks/use-chat-session.ts`)
-  calls `supabase.auth.signInAnonymously()` on mount and returns
-  `auth.user.id` as the chat session id. `src/proxy.ts` (Next.js 16's
-  middleware-equivalent) calls `getUser()` on every request to refresh the
-  auth cookie. Anonymous sign-ins must be enabled in
-  `supabase/config.toml` (`enable_anonymous_sign_ins = true`) and in the
-  Supabase dashboard for any deployed environment.
+- **Auth (anonymous + admin):** `useChatSession`
+  (`src/hooks/use-chat-session.ts`) calls
+  `supabase.auth.signInAnonymously()` on mount and returns `auth.user.id`
+  as the chat session id. `src/proxy.ts` (Next.js 16's
+  middleware-equivalent) delegates to `src/lib/supabase/proxy.ts`, which
+  (a) refreshes the auth cookie on every request and (b) gates
+  `/admin/*` by calling `is_admin` via RPC. Anonymous sign-ins must be
+  enabled in `supabase/config.toml` (`enable_anonymous_sign_ins = true`)
+  and in the Supabase dashboard for any deployed environment. Admin
+  users are rows in `public.admins`; see
+  `supabase/schemas/006-admins.sql` for the helper functions
+  (`is_admin`, `add_admin_by_email`, `remove_admin`) and
+  `supabase/seed.sql` for local founding-admin bootstrap.
 - **Knowledge base:** The agent may ONLY state facts about LCA that it retrieves via
   `retrieve_lca_knowledge`. Curated content lives in the `public.lca_knowledge` table
   and is searched via Postgres full-text search (`search_lca_knowledge(q, k)` SQL
-  function). Seed/refresh by scraping latecheckout.agency: `pnpm db:seed-knowledge`
-  (requires `SUPABASE_SERVICE_ROLE_KEY` in `.env.local`). To change the page list
-  edit `scripts/seed-lca-knowledge.ts`.
+  function). Admins edit it via `/admin/knowledge`. Two seeding modes:
+  - `pnpm db:seed-knowledge` — scrapes `latecheckout.agency` and upserts
+    directly via the service role (fast local refresh).
+  - `pnpm db:refresh-knowledge-sql` — scrapes the same pages and writes a
+    new committed migration (`supabase/migrations/<ts>_seed_lca_knowledge.sql`)
+    so fresh databases (preview, prod) come up with content automatically.
+    Re-run when the marketing site changes; commit the resulting migration.
+  To change the scraped page list, edit `scripts/seed-lca-knowledge.ts`.
 
 ## Key files
 
 ```
 src/
-  proxy.ts                     ← Next.js 16 proxy (refreshes Supabase auth cookie)
+  proxy.ts                     ← Next.js 16 proxy (cookie refresh + /admin/* gate)
   app/
+    (admin)/admin/             ← admin route group (login, signup, dashboard,
+                                 knowledge CRUD, sessions inspector,
+                                 admins manage, FTS playground)
     api/chat/route.ts          ← DurableAgent endpoint ('use workflow')
     api/sessions/route.ts      ← session init (writes user_id from auth)
     api/connect-request/route.ts ← visitor-initiated intro email to LCA
@@ -134,8 +162,11 @@ supabase/
   config.toml                  ← supabase CLI config (schema_paths → ./schemas/*.sql)
   schemas/<NNN>-<name>.sql     ← declarative schema; one file per table + extensions
   migrations/                  ← generated by `supabase db diff` (committed)
+  seed.sql                     ← local-only seed; bootstraps the founding admin row
 scripts/
-  seed-lca-knowledge.ts        ← scrapes latecheckout.agency → lca_knowledge (service role)
+  seed-lca-knowledge.ts        ← scrapes latecheckout.agency → lca_knowledge
+                                 (service role for `db:seed-knowledge`, or
+                                  emits a migration for `db:refresh-knowledge-sql`)
 ```
 
 ## Schema change loop
@@ -194,7 +225,10 @@ pnpm build              # must pass (catches route/export issues)
 ## Do not
 
 - Add multi-tenant logic or CRM write-backs — explicitly out of scope.
-  (Auth was added — anonymous-only; do not promote to email/OAuth here.)
+- Add OAuth providers (Google/GitHub/…) — admin auth is intentionally
+  email/password only. Anyone can sign up; only `admins` rows are
+  privileged. Don't gate admin access on JWT claims either — the
+  `is_admin()` function is the single source of truth.
 - Embed this in lca.agency — standalone only.
 - Let the agent invent LCA facts — it must call `retrieve_lca_knowledge`.
 - Commit `.env.local` or any real API keys.

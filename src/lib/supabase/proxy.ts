@@ -10,8 +10,17 @@ import type { Database } from '@/lib/database.types'
  * session can drift and `getUser()` returns null on the server even when the
  * client thinks it's signed in.
  *
- * No path-based redirects: the spike has no protected routes — we only use
- * `proxy.ts` for cookie refresh.
+ * Also enforces the `/admin/*` gate:
+ *   - not signed in            → redirect to /admin/login
+ *   - signed in but not an admin (covers anon visitors and unprivileged
+ *     email/password users)    → redirect to /admin/no-access
+ *
+ * `/admin/login`, `/admin/signup`, and `/admin/no-access` are public so the
+ * redirect targets don't themselves redirect.
+ *
+ * Admin status is checked via `public.is_admin()` rather than a JWT claim so
+ * there's one source of truth (the `admins` table); see
+ * supabase/schemas/006-admins.sql.
  */
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -35,9 +44,34 @@ export async function updateSession(request: NextRequest) {
     },
   )
 
-  // Touch getUser() so @supabase/ssr decides whether to rotate the JWT and
-  // write fresh cookies. We don't actually use the user here.
-  await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  const { pathname } = request.nextUrl
+
+  if (pathname.startsWith('/admin')) {
+    // Pages users can hit without already being an admin.
+    const publicAdminPaths = ['/admin/login', '/admin/signup', '/admin/no-access']
+    const isPublicAdminPath = publicAdminPaths.some((p) => pathname === p || pathname.startsWith(p + '/'))
+
+    if (!isPublicAdminPath) {
+      if (!user) {
+        const url = request.nextUrl.clone()
+        url.pathname = '/admin/login'
+        url.searchParams.set('next', pathname)
+        return NextResponse.redirect(url)
+      }
+
+      // RPC returns boolean; .rpc with no args still typechecks.
+      const { data: isAdmin } = await supabase.rpc('is_admin')
+      if (!isAdmin) {
+        const url = request.nextUrl.clone()
+        url.pathname = '/admin/no-access'
+        return NextResponse.redirect(url)
+      }
+    }
+  }
 
   return supabaseResponse
 }

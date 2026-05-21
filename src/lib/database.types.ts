@@ -34,6 +34,24 @@ export type Database = {
   }
   public: {
     Tables: {
+      admins: {
+        Row: {
+          created_at: string
+          note: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          note?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          note?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       email_captures: {
         Row: {
           created_at: string
@@ -115,31 +133,40 @@ export type Database = {
           category: string
           content: string
           created_at: string
+          created_by: string | null
           id: string
           search_vector: unknown
           source_url: string | null
           tags: string[]
           title: string
+          updated_at: string
+          updated_by: string | null
         }
         Insert: {
           category: string
           content: string
           created_at?: string
+          created_by?: string | null
           id?: string
           search_vector?: unknown
           source_url?: string | null
           tags?: string[]
           title: string
+          updated_at?: string
+          updated_by?: string | null
         }
         Update: {
           category?: string
           content?: string
           created_at?: string
+          created_by?: string | null
           id?: string
           search_vector?: unknown
           source_url?: string | null
           tags?: string[]
           title?: string
+          updated_at?: string
+          updated_by?: string | null
         }
         Relationships: []
       }
@@ -245,6 +272,22 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      add_admin_by_email: {
+        Args: { p_email: string; p_note?: string }
+        Returns: {
+          created_at: string
+          note: string | null
+          user_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "admins"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      is_admin: { Args: never; Returns: boolean }
+      remove_admin: { Args: { p_user_id: string }; Returns: undefined }
       search_lca_knowledge: {
         Args: { max_results?: number; q: string }
         Returns: {
