@@ -7,14 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
-// Hidden by default — the panel is for internal/dev visibility only. Set
-// NEXT_PUBLIC_SHOW_ICP_PANEL=true in .env.local to render it. Read once at
-// module load: `NEXT_PUBLIC_*` is inlined by the bundler at build time, so
-// flipping the flag requires a restart of `pnpm dev`.
-const SUPERUSER_PANEL_ENABLED = process.env.NEXT_PUBLIC_SHOW_ICP_PANEL === 'true'
-
 type SuperuserPanelContextValue = {
-  enabled: boolean
   open: boolean
   toggle: () => void
 }
@@ -40,7 +33,7 @@ export function SuperuserPanelProvider({ children }: { children: React.ReactNode
   const toggle = useCallback(() => setOpen((prev) => !prev), [])
 
   const value = useMemo<SuperuserPanelContextValue>(
-    () => ({ enabled: SUPERUSER_PANEL_ENABLED, open, toggle }),
+    () => ({ open, toggle }),
     [open, toggle],
   )
 
@@ -51,11 +44,11 @@ export function SuperuserPanelProvider({ children }: { children: React.ReactNode
 
 /**
  * Header-mounted icon button that opens/closes the superuser side panel.
- * Renders nothing when the gate flag is off, so prod builds never show it.
+ * Always rendered — the shield icon is the signal that the drawer is an
+ * internal/dev surface, not a visitor-facing feature.
  */
 export function SuperuserToggleButton() {
-  const { enabled, open, toggle } = useSuperuserPanelContext()
-  if (!enabled) return null
+  const { open, toggle } = useSuperuserPanelContext()
 
   return (
     <Button
@@ -78,13 +71,13 @@ export function SuperuserToggleButton() {
 
 /**
  * Left-side drawer for internal/dev tooling — currently the ICP-fit card.
- * Visible only when the gate flag is on AND the toggle button has been
- * activated. The ICP polling hook is only mounted while the drawer is
- * actually open, so closed-state has no network cost.
+ * Visible only when the toggle button has been activated. The ICP polling
+ * hook is only mounted while the drawer is actually open, so closed-state
+ * has no network cost.
  */
 export function SuperuserPanel({ sessionId }: { sessionId: string | null }) {
-  const { enabled, open } = useSuperuserPanelContext()
-  if (!enabled || !open || !sessionId) return null
+  const { open } = useSuperuserPanelContext()
+  if (!open || !sessionId) return null
 
   return (
     <div className="flex h-full w-72 shrink-0 flex-col border-r bg-muted/30">

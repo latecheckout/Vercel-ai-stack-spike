@@ -13,8 +13,8 @@ import type { IcpEvaluation, IcpTier } from '@/lib/db/queries/icp-evaluations'
  * while a session is active.
  *
  * Visibility is gated upstream by [[superuser-panel]], which only mounts
- * this when `NEXT_PUBLIC_SHOW_ICP_PANEL=true` and the panel is open — so
- * the polling hook stays dormant in production builds.
+ * this when the shield-icon drawer is open — so the polling hook stays
+ * dormant while the drawer is closed.
  */
 export function IcpFitCard({ sessionId }: { sessionId: string | null }) {
   if (!sessionId) return null

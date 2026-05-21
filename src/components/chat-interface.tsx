@@ -34,9 +34,8 @@ function createQueryClient() {
  *   └───────────┴─────────────────────────────────────────┘
  *
  * The leftmost column is the collapsible SuperuserPanel (internal/dev
- * tooling — currently the ICP-fit card). It's gated by
- * NEXT_PUBLIC_SHOW_ICP_PANEL and opened via the shield icon in the page
- * header; collapses to zero width when closed.
+ * tooling — currently the ICP-fit card). It's opened via the shield icon
+ * in the page header and collapses to zero width when closed.
  *
  * WorkflowChatTransport replaces the default useChat fetch transport.
  * It handles:

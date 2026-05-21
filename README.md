@@ -98,7 +98,6 @@ for the full template.
 | `NEXT_PUBLIC_SUPABASE_URL`      | `supabase status` → API URL (`http://127.0.0.1:54321`) | Browser + server Supabase clients |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `supabase status` → anon key                      | RLS-enforced reads/writes         |
 | `SUPABASE_SERVICE_ROLE_KEY`     | `supabase status` → service_role key              | Admin client (no admin routes yet)|
-| `NEXT_PUBLIC_SHOW_ICP_PANEL`    | Local toggle — set to `true` in dev only          | Renders the internal ICP-fit card |
 
 ---
 
@@ -229,12 +228,11 @@ internal read on inbound lead quality.
 - **Surface:** a small card at the top of the right-hand panel — tier
   badge, score (0–100), per-signal breakdown (funding / stage / ambition /
   engagement fit), anti-signals, and a one-line "next step" hint.
-- **Visibility:** **hidden by default**. Set `NEXT_PUBLIC_SHOW_ICP_PANEL=true`
-  in `.env.local` to render the card in local dev. The server-side eval
-  runs and writes to Supabase regardless of this flag; only the UI surface
-  is gated. (This will switch to a `NODE_ENV === 'development'` gate
-  later — using an env var for now so it can be flipped per-environment
-  without a code change.)
+- **Visibility:** the drawer is **closed by default** and opens via the
+  shield icon in the page header. The icon is always present — it's the
+  signal that the drawer is an internal/dev surface, not a visitor-facing
+  feature. The server-side eval runs and writes to Supabase regardless of
+  whether the drawer is ever opened.
 
 The ICP prompt is in [`src/lib/agent/icp.ts`](./src/lib/agent/icp.ts); the
 schema (zod + Postgres) lives in
