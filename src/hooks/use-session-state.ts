@@ -3,13 +3,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { SessionMode } from '@/lib/db/queries/sessions'
 
+import { POLL_INTERVAL_MS } from '@/lib/config'
+
 export interface SessionState {
   id: string
   mode: SessionMode
   summary: string
 }
-
-const POLL_INTERVAL_MS = 3_000
 
 /**
  * Fetches `{ mode, summary }` for the current session and polls so the

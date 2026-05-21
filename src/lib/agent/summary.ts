@@ -15,6 +15,7 @@
 import { generateText } from 'ai'
 import type { VisitorFact } from '../db/queries/visitor-facts'
 import type { DbMessage } from '../db/queries/messages'
+import { renderFactsBlock, renderMessageTranscript } from './render-context'
 
 const SUMMARY_MODEL = 'anthropic/claude-sonnet-4.5'
 
@@ -26,11 +27,6 @@ const SUMMARY_STYLE_GUIDE = `Style:
 - Do not invent facts. If something is uncertain, leave it out.
 - Treat the visitor facts list as authoritative — anything not consistent
   with it must be dropped.`
-
-function renderFactsBlock(facts: VisitorFact[]): string {
-  if (facts.length === 0) return '(no confirmed facts yet)'
-  return facts.map((f) => `- [${f.category}] ${f.fact}`).join('\n')
-}
 
 /**
  * Extend an existing summary with one new turn. Called per-turn while the
@@ -81,12 +77,7 @@ export async function regenerateFromTranscript(input: {
 }): Promise<string> {
   if (input.messages.length === 0) return ''
 
-  const transcript = input.messages
-    .map(
-      (m) =>
-        `${m.role === 'user' ? 'Visitor' : 'LCA'}: ${m.content}`,
-    )
-    .join('\n\n')
+  const transcript = renderMessageTranscript(input.messages)
 
   const { text } = await generateText({
     model: SUMMARY_MODEL,

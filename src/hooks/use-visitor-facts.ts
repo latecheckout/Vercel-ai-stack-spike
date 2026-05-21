@@ -2,8 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { VisitorFact } from '@/lib/db/queries/visitor-facts'
-
-const POLL_INTERVAL_MS = 3_000 // poll every 3 s while the agent is active
+import { POLL_INTERVAL_MS } from '@/lib/config'
 
 /**
  * Fetches visitor facts for the current session and re-fetches on an interval

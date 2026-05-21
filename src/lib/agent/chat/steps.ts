@@ -13,6 +13,7 @@
 
 import { extendSummary } from '../summary'
 import { draftConnectEmail, type ConnectDraft } from '../connect-request'
+import { evaluateIcp } from '../icp'
 import { saveMessage, getMessages } from '../../db/queries/messages'
 import {
   getSession,
@@ -29,6 +30,7 @@ import {
   searchLcaKnowledge as dbSearchLcaKnowledge,
   type LcaKnowledgeHit,
 } from '../../db/queries/lca-knowledge'
+import { saveIcpEvaluation } from '../../db/queries/icp-evaluations'
 
 export interface SessionRuntimeState {
   mode: SessionMode
@@ -150,6 +152,56 @@ export async function draftConnectRequestStep(
       ok: false,
       error: err instanceof Error ? err.message : String(err),
     }
+  }
+}
+
+// ─── ICP (Ideal Customer Profile) evaluation ──────────────────────────────
+
+/**
+ * Score the visitor against LCA's ICP and persist the result. Runs from
+ * the workflow's `onFinish` once per assistant turn — by then the model
+ * has had its chance to save new facts via `save_visitor_fact`, so this
+ * sees the up-to-date cumulative state.
+ *
+ * Fails silently. The eval is an observability surface, not a gating
+ * mechanism — a Gateway hiccup must never break the user-facing reply.
+ */
+export async function evaluateIcpStep(sessionId: string): Promise<void> {
+  'use step'
+
+  try {
+    // Pull the freshest inputs from the DB rather than threading them in
+    // from the workflow: by the time this runs the visitor may have just
+    // deleted a fact or the model may have just saved one. Same reasoning
+    // as `extendSummaryStep`.
+    const [facts, messages, session] = await Promise.all([
+      dbGetVisitorFacts(sessionId),
+      getMessages(sessionId),
+      getSession(sessionId),
+    ])
+
+    // Skip the model call entirely when there is nothing meaningful to
+    // score — fresh visitor on turn 0, before they've said anything.
+    // Cheap correctness: no row written, the panel just shows the empty
+    // state until there's real signal.
+    if (messages.length === 0 && facts.length === 0) return
+
+    const result = await evaluateIcp({
+      facts,
+      messages,
+      summary: session?.summary ?? '',
+    })
+
+    await saveIcpEvaluation({
+      sessionId,
+      score: result.score,
+      tier: result.tier,
+      rationale: result.rationale,
+      signals: result.signals,
+      recommendation: result.recommendation,
+    })
+  } catch (err) {
+    console.error('[evaluateIcpStep] failed', err)
   }
 }
 

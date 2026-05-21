@@ -212,6 +212,35 @@ for the why.
 
 ---
 
+## ICP fit scoring (internal)
+
+After every assistant turn, a parallel evaluator scores the visitor against
+LCA's Ideal Customer Profile. It's not in the user-facing flow — it's an
+internal read on inbound lead quality.
+
+- **Trigger:** `evaluateIcpStep` runs from the workflow's `onFinish` once per
+  assistant reply. It picks up any visitor facts that were saved during the
+  turn, so per-message and per-fact-save updates are both covered by the
+  same hook.
+- **Storage:** one row per evaluation in `public.icp_evaluations` (history,
+  not last-write-wins — handy for inspecting how a visitor's fit shifted
+  as the conversation progressed).
+- **Surface:** a small card at the top of the right-hand panel — tier
+  badge, score (0–100), per-signal breakdown (funding / stage / ambition /
+  engagement fit), anti-signals, and a one-line "next step" hint.
+- **Visibility:** the drawer is **closed by default** and opens via the
+  shield icon in the page header. The icon is always present — it's the
+  signal that the drawer is an internal/dev surface, not a visitor-facing
+  feature. The server-side eval runs and writes to Supabase regardless of
+  whether the drawer is ever opened.
+
+The ICP prompt is in [`src/lib/agent/icp.ts`](./src/lib/agent/icp.ts); the
+schema (zod + Postgres) lives in
+[`supabase/schemas/006-icp-evaluations.sql`](./supabase/schemas/006-icp-evaluations.sql)
+and [`src/lib/db/queries/icp-evaluations.ts`](./src/lib/db/queries/icp-evaluations.ts).
+
+---
+
 ## What's deliberately out of scope
 
 - **Auth.** No login, no per-user data isolation. Sessions are anonymous and

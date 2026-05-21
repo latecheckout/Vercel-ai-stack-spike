@@ -13,23 +13,13 @@
 import { generateText } from 'ai'
 import type { VisitorFact } from '../db/queries/visitor-facts'
 import type { DbMessage } from '../db/queries/messages'
+import { renderFactsBlock, renderMessageTranscript } from './render-context'
 
 const CONNECT_MODEL = 'anthropic/claude-sonnet-4.5'
 
 export interface ConnectDraft {
   subject: string
   body: string
-}
-
-function renderFactsBlock(facts: VisitorFact[]): string {
-  if (facts.length === 0) return '(none confirmed yet)'
-  return facts.map((f) => `- [${f.category}] ${f.fact}`).join('\n')
-}
-
-function renderTranscript(messages: DbMessage[]): string {
-  return messages
-    .map((m) => `${m.role === 'user' ? 'Visitor' : 'LCA'}: ${m.content}`)
-    .join('\n\n')
 }
 
 /**
@@ -82,7 +72,7 @@ explicitly confirmed about themselves):
 ${renderFactsBlock(input.facts)}
 
 Conversation transcript:
-${renderTranscript(input.messages)}
+${renderMessageTranscript(input.messages)}
 
 Draft the email now.`,
   })
