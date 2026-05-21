@@ -167,19 +167,11 @@ function ChatInterfaceInner() {
     setInput('')
   }
 
-  const handleSuggestionPick = useCallback(
-    (text: string) => {
-      if (isStreaming || !sessionId) return
-      sendMessage({ text })
-    },
-    [isStreaming, sessionId, sendMessage],
-  )
-
-  // Inline quick-reply: invoked by `propose_lca_connect`'s "Connect me"
-  // button. Same gating as the suggestion pills — drop the click if we're
-  // still streaming or have no session yet, so a double-click can't queue
-  // a duplicate turn.
-  const handleQuickReply = useCallback(
+  // Single handler for any UI-driven message send (intro suggestion
+  // pills, propose_lca_connect's "Connect me" button). Gating dropped if
+  // the stream is in flight or we have no session yet so a double-click
+  // can't queue a duplicate turn.
+  const handleSendText = useCallback(
     (text: string) => {
       if (isStreaming || !sessionId) return
       sendMessage({ text })
@@ -258,11 +250,11 @@ function ChatInterfaceInner() {
             messages={messages}
             isStreaming={isStreaming}
             sessionId={sessionId}
-            onQuickReply={handleQuickReply}
+            onQuickReply={handleSendText}
             footer={
               showSuggestions ? (
                 <IntroSuggestions
-                  onPick={handleSuggestionPick}
+                  onPick={handleSendText}
                   disabled={isStreaming}
                 />
               ) : null

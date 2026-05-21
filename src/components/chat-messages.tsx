@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   ConnectRequestCard,
-  type ConnectDraft,
+  type ConnectOfferOutput,
 } from '@/components/connect-request-card'
 
 // Tool call display metadata. `getLabel` receives `part.input` (which may be
@@ -181,7 +181,7 @@ function MessageBubble({
               part.state === 'output-available' &&
               sessionId
             ) {
-              const draft = (part.output ?? {}) as ConnectDraft
+              const draft = (part.output ?? {}) as ConnectOfferOutput
               return (
                 <div key={i} className="w-full">
                   <ConnectRequestCard sessionId={sessionId} draft={draft} />
