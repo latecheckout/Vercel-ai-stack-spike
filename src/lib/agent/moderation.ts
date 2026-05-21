@@ -7,9 +7,10 @@
  * route returns a single-message refusal stream and never invokes the
  * workflow at all.
  *
- * Fail-open: if `OPENAI_API_KEY` is missing or the call errors, we treat the
- * message as clean. The spike already follows this pattern for Exa/Resend —
- * better to ship a flaky-network turn than to suppress legit responses.
+ * Missing `OPENAI_API_KEY` throws — the moderation gate is a security
+ * surface and silent config drift would let unfiltered turns through
+ * without anyone noticing. Transient network/HTTP failures still fail-open
+ * so a flaky moderation API can't take chat down entirely.
  */
 
 const MODERATION_URL = 'https://api.openai.com/v1/moderations'
@@ -23,8 +24,7 @@ export type ModerationResult =
 export async function moderateText(text: string): Promise<ModerationResult> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
-    console.warn('[moderation] OPENAI_API_KEY not set — skipping (fail-open)')
-    return { flagged: false }
+    throw new Error('OPENAI_API_KEY is not set — moderation gate cannot run')
   }
 
   const trimmed = text.trim()
