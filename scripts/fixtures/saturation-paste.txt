@@ -1,0 +1,36 @@
+Hi — I'll dump everything you need up front so we can move fast.
+
+Who we are
+- Company: Helix Compute, San Francisco. Incorporated Delaware C-Corp in 2024.
+- Stage: Series A — closed $18M in March, led by Index Ventures, with Conviction, South Park Commons, and a handful of founder/operator angels participating. Cap table is clean.
+- Team: 22 people total. 14 engineering, 3 design, 2 GTM, 2 ops, 1 recruiting. Hiring 8 more by EOY.
+- Investors mostly came in on the strength of the founding team — I (Marta Chen) was previously the second design hire at Linear and ran the design org at Replit before that. My co-founder Dmitri ran inference infra at Anthropic for three years.
+
+What we do
+- Helix Compute is a developer-facing AI platform — closest analogy is "Vercel for AI agents". We sell infrastructure to teams shipping agentic products: a runtime, a control plane, observability primitives, and a UI kit specifically designed for streaming agent outputs.
+- Our customers are mid-market SaaS companies (Series A-C, ~50–500 person teams) that have an AI roadmap but don't have the platform expertise to ship reliably. About 40 paying logos today, $2.3M ARR, growing ~22% MoM for the last 4 months.
+- The product has three surfaces: a CLI for developers, a dashboard at app.helix.compute, and an embedded UI kit (React + a small Vue port) that customers drop into their own apps.
+
+What's actually broken
+- The embedded UI kit is the lowest-NPS surface we ship. It works, but it looks and feels like an internal tool. Customers use it because we ship it for free with the platform, then immediately re-skin it (badly) before going to production. We lose a meaningful amount of perceived product quality at exactly the moment our customers are evangelizing us to their leadership.
+- The dashboard is a similar story. Functional but visually inert. New users land, blink, and bounce. Our top-of-funnel CVR is ~4% — we believe a better dashboard pushes that to 8-10%.
+- Brand is uneven. We rushed a wordmark and palette out the door at launch and have been patching it for a year. We have no brand guidelines doc, no illustration system, no motion language. Engineers improvise per-component and it shows.
+
+What we want to do
+- A 14-week engagement, kicking off in 4 weeks, that overhauls (a) the embedded UI kit, (b) the dashboard's first-run experience and core flows, and (c) the brand system end-to-end. We need taste at every layer.
+- Specifically: we want a partner who has shipped agent-native UI before — not a regular SaaS design shop. The streaming, multi-step, partial-information patterns are genuinely new and we've seen most design partners fumble them.
+- We've talked to four firms in the last six weeks. Two were obviously too generic (logos for everyone, no AI experience). One ghosted us after the second call. The fourth is in active conversation but their portfolio doesn't include anything we'd call AI-native.
+- Budget is $300-450K for the engagement, with retainer flexibility for ongoing work after.
+- Decision: we have a board update on June 12 and need to either commit or kill this initiative by then. So ~3 weeks to align with a partner, contract, and kick off.
+
+Why we found LCA
+- One of our angels (ex-Stripe design lead) sent your Grammarly case study around the team Slack with the message "this is the bar". We dug in. The Dropbox Dash work is the closest analog to what we need on the dashboard side — same kind of paradigm shift, similar surface area.
+- The Innovation Lab page on your site is what made us reach out specifically. The 60-day cadence is roughly half what we'd need but the framing matched our brief almost exactly.
+
+What I need from you
+- Is this the kind of engagement you take on? If yes, who would lead it, and roughly when could you kick off?
+- Can you walk us through 2-3 closest-fit case studies (we've seen the website, looking for the inside view)?
+- If there's an obvious next step — a call with one of your partners, a scoping doc, a proposal template — let's just do that.
+
+Happy to talk. Best window for a call: Tuesday or Wednesday next week, mornings PT.
+— Marta

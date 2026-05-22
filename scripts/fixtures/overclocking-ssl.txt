@@ -1,0 +1,83 @@
+(This is a write up of the talk that I gave at Velocity 2010 last Thursday. This is a joint work of myself, Nagendra Modadugu and Wan-Teh Chang.)
+
+The 'S' in HTTPS stands for 'secure' and the security is provided by SSL/TLS. SSL/TLS is a standard network protocol which is implemented in every browser and web server to provide confidentiality and integrity for HTTPS traffic.
+
+If there's one point that we want to communicate to the world, it's that SSL/TLS is not computationally expensive any more. Ten years ago it might have been true, but it's just not the case any more. You too can afford to enable HTTPS for your users.
+
+In January this year (2010), Gmail switched to using HTTPS for everything by default. Previously it had been introduced as an option, but now all of our users use HTTPS to secure their email between their browsers and Google, all the time. In order to do this we had to deploy no additional machines and no special hardware. On our production frontend machines, SSL/TLS accounts for less than 1% of the CPU load, less than 10KB of memory per connection and less than 2% of network overhead. Many people believe that SSL takes a lot of CPU time and we hope the above numbers (public for the first time) will help to dispel that.
+
+If you stop reading now you only need to remember one thing: SSL/TLS is not computationally expensive any more.
+
+The first part of this text contains hints for SSL/TLS performance and then the second half deals with things that Google is doing to address the latency that SSL/TLS adds.
+
+Basic configuration
+
+Modern hardware can perform 1500 handshakes/second/core. That's assuming that the handshakes involve a 1024-bit RSA private operation (make sure to use 64-bit software). If your site needs high security then you might want larger public key sizes or ephemeral Diffie-Hellman, but then you're not the HTTP-only site that this presentation is aimed at. But pick your certificate size carefully.
+
+It's also important to pick your preferred ciphersuites. Most large sites (Google included) will try to pick RC4 because it's very fast and, as a stream cipher, doesn't require padding. Recent Intel chips (Westmere) contain AES instructions which can make AES the better choice, but remember that there's no point using AES-256 with a 1024-bit public key. Also keep in mind that ephemeral Diffie-Hellman (EDH or DHE) ciphersuites will handshake at about half the speed of pure RSA ciphersuites. However, with a pure RSA ciphersuite, an attacker can record traffic, crack (or steal) your private key at will and decrypt the traffic retrospectively, so consider your needs.
+
+OpenSSL tends to allocate about 50KB of memory for each connection. We have patched OpenSSL to reduce this to about 5KB and the Tor project have independently written a similar patch that is now upstream. (Check for SSL_MODE_RELEASE_BUFFERS in OpenSSL 1.0.0a.). Keeping memory usage down is vitally important when dealing with many connections.
+
+Resumption
+
+There are two types of SSL/TLS handshake: a full handshake and an abbreviated handshake. The full handshake takes two round trips (in addition to the round trip from the TCP handshake).
+
+The abbreviated handshake occurs when the connection can resume a previous session. This can only occur if the client has the previous session information cached. Since the session information contains key material, it's never cached on disk so the attempted client resume rate, seen by Google, is only 50%. Older clients also require that the server cache the session information. Since these old clients haven't gone away yet, it's vitally important to setup a shared session cache if you have multiple frontend machines. The server-side miss rate at Google is less than 10%.
+
+An abbreviated handshake saves the server performing an RSA operation, but those are cheap anyway. More importantly, it saves a round-trip time.
+
+Addressing round trips is a major focus of our SSL/TLS work at Google (see below).
+
+Certificates
+
+We've already mentioned that you probably don't want to use 4096-bit certificates without a very good reason, but there are other certificate issues which can cause a major slowdown.
+
+Firstly, most certificates from CAs require an intermediate certificate to be presented by the server. Rather than have the root certificate sign the end certificates directly, the root signs the intermediate and the intermediate signs the end certificate. Sometimes there are several intermediate certificates.
+
+If you forget to include an intermediate certificate then things will probably still work. The end certificate will contain the URL of the intermediate certificate and, if the intermediate certificate is missing, the browser will fetch it. This is obviously very slow (a DNS lookup, TCP connection and HTTP request blocking the handshake to your site). Unfortunately there's a constant pressure on browsers to work around issues and, because of this, many sites which are missing certificates will never notice because the site still functions. So make sure to include all your certificates (in the correct order)!
+
+There's a second certificate issue that can increase latency: the certificate chain can be too large. A TCP connection will only send so much data before waiting to hear from the other side. It slowly ramps this amount up over time, but a new TCP connection will only send (typically) three packets. This is called the initial congestion window (initcwnd). If your certificates are large enough, they can overflow the initcwnd and cause an additional round trip as the server waits for the client to ACK the packets.
+
+For example, www.bankofamerica.com sends four certificates: 1624 bytes, 1488 bytes, 1226 bytes and 576 bytes. That will overflow the initcwnd, but it's not clear what they could do about that if their CA really requires that many intermediate certificates. On the other hand, edgecastcdn.net has a single certificate that's 4093 bytes long, containing 107 hostnames!
+
+Packets and records
+
+SSL/TLS packages the bytes of the application protocol (HTTP in our case) into records. Each record has a signature and a header. Records are packed into packets and each packet has headers. The overhead of a record is typically 25 to 40 bytes (based on common ciphersuites) and the overhead of a packet is around 52 bytes. So it's vitally important not to send lots of small packets with small records in them.
+
+I don't want to be seen to be picking on Bank Of America, it's honestly just the first site that I tried, but looking at their packets in Wireshark, we see many small records, often sent in a single packet. A quick sample of the record sizes: 638 bytes, 1363, 15628, 69, 182, 34, 18, … This is often caused because OpenSSL will build a record from each call to SSL_write and the kernel, with Nagle disabled, will send out packets to minimise latency.
+
+This can be fixed with a couple of tricks: buffer in front of OpenSSL and don't make SSL_write calls with small amounts of data if you have more coming. Also, if code limitations mean that you are building small records in some cases, then use TCP_CORK to pack several of them into a packet.
+
+But don't make the records too large either! See the 15KB record that https://www.bankofamerica.com sent? None of that data can be parsed by the browser until the whole record has been received. As the congestion window opens up, those large records tend to span several windows and so there's an extra round trip of delay before the browser gets any of that data. Since the browser is pre-parsing the HTML for subresources, it'll delay discovery and cause more knock-on effects.
+
+So how large should records be? There's always going to be some uncertainty in that number because the size of the TCP header depends on the OS and the number of SACK blocks that need to be sent. In the ideal case, each packet is full and contains exactly one record. Start with a value of 1415 bytes for a non-padded ciphersuite (like RC4), or 1403 bytes for an AES based ciphersuite and look at the packets which result from that.
+
+OCSP and CRLs
+
+OCSP and CRLs are both methods of dealing with certificate revocation: what to do when you lose control of your private key. The certificates themselves contain the details of how to check if they have been revoked.
+
+OCSP is a protocol for asking the issuing authority "What's the status of this certificate?" and a CRL is a list of certificates which have been revoked by the issuing authority. Both are fetched over HTTP and a certificate can specify an OCSP URL, a CRL URL, or both. But certificate authorities will typically use at least OCSP.
+
+Firefox 2 and IE on Windows XP won't block an SSL/TLS handshake for either revocation method. IE on Vista will block for OCSP, as will Firefox 3. Since there can be several OCSP requests resulting from a handshake (one for each certificate), and because OCSP responders can be slow, this can result in hundreds of milliseconds of additional latency for the first connection.
+
+The answer to this is OCSP stapling: the SSL/TLS server includes the OCSP response in the handshake. OCSP responses are public and typically last for a week, so the server can do the work of fetching them and reuse the response for many connections. The latest alpha of Apache supports this (httpd 2.3.6-alpha). Google is currently rolling out support.
+
+However, OCSP stapling has several issues. Firstly, the protocol only allows the server to staple one response into the handshake: so if you have more than one certificate in the chain the client will probably end up doing an OCSP check anyway. Secondly, an OCSP response is about 1K of data. Remember the issue with overflowing the initcwnd with large certificates? Well the OCSP response is included in the same part of the handshake, so it puts even more pressure on certificate sizes.
+
+Google's SSL/TLS work
+
+Google is working on a number of fronts here. I'll deal with them in order of deployment and complexity.
+
+Firstly we have False Start. All you really need to know is that it reduces the number of round trips for a full handshake from two to one. Thus, there's no longer any latency advantage to resuming. It's a client-side change which should be live in Chrome 8 and is already in some builds of Android Froyo.
+
+Secondly, Chrome will soon have OCSP preloading. This involves predicting the certificates that a server will use based on past experience and starting the OCSP lookups concurrently with the DNS resolution and TCP connection.
+
+Slightly more complex, but deployed, is Next Protocol Negotiation. This pushes negotiation of the application level protocol down into the TLS handshake. It's how we trigger the use of SPDY. It's live on the Google frontend servers and in Chrome (6).
+
+Lastly, and most complex, is Snap Start. This reduces the round trip times to zero for both types of handshakes. It's a client and server side change and it assumes that the client has the server's certificate cached and has up-to-date OCSP information. However, since the certificate and OCSP responses are public information, we can cache them on disk for long periods of time.
+
+Conclusion
+
+I hope that was helpful. We want to make the web faster and more secure and this sort of communication helps keep the world abreast of what we're doing.
+
+Also, don't forget that we recently deployed encrypted web search on https://encrypted.google.com. Switch your search engine!
