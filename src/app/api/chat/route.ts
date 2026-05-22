@@ -12,12 +12,17 @@
  *     reconnect to an interrupted stream via `/api/chat/[runId]/stream`.
  */
 
-import { convertToModelMessages, createUIMessageStreamResponse } from 'ai'
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+} from 'ai'
 import type { UIMessage, UIMessageChunk } from 'ai'
 import { start } from 'workflow/api'
 import { runChatWorkflow } from '@/lib/agent/chat'
 import { upsertSession } from '@/lib/db/queries/sessions'
 import { saveMessage } from '@/lib/db/queries/messages'
+import { moderateText, MODERATION_REFUSAL_TEXT } from '@/lib/agent/moderation'
 
 export async function POST(req: Request) {
   const body = (await req.json()) as { chatId: string; messages: UIMessage[] }
@@ -33,14 +38,40 @@ export async function POST(req: Request) {
   await upsertSession(chatId)
 
   const lastUserMsg = [...uiMessages].reverse().find((m) => m.role === 'user')
-  if (lastUserMsg) {
-    const content = lastUserMsg.parts
-      .filter((p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text')
-      .map((p) => p.text)
-      .join('')
-    if (content) {
-      await saveMessage(chatId, 'user', content).catch(() => undefined)
-    }
+  const lastUserText = lastUserMsg
+    ? lastUserMsg.parts
+        .filter((p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text')
+        .map((p) => p.text)
+        .join('')
+    : ''
+
+  if (lastUserText) {
+    await saveMessage(chatId, 'user', lastUserText).catch(() => undefined)
+  }
+
+  // Moderate before kicking off the workflow. Omni-moderation is fast
+  // (~200–400ms) so a sequential check is cheaper than the race-condition
+  // surface of cancelling a partially-streamed agent run. Moderation lives
+  // here (route handler) rather than inside the workflow because the flow
+  // worker is stripped down (no `fetch`, no `AbortSignal`) — see AGENTS.md.
+  const moderation = lastUserText
+    ? await moderateText(lastUserText)
+    : { flagged: false as const }
+
+  if (moderation.flagged) {
+    await saveMessage(chatId, 'assistant', MODERATION_REFUSAL_TEXT).catch(
+      () => undefined,
+    )
+    return createUIMessageStreamResponse({
+      stream: createUIMessageStream({
+        execute: ({ writer }) => {
+          const id = 'moderation-refusal'
+          writer.write({ type: 'text-start', id })
+          writer.write({ type: 'text-delta', id, delta: MODERATION_REFUSAL_TEXT })
+          writer.write({ type: 'text-end', id })
+        },
+      }),
+    })
   }
 
   const modelMessages = await convertToModelMessages(uiMessages)

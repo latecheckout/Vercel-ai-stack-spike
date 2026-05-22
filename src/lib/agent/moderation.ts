@@ -1,0 +1,71 @@
+/**
+ * OpenAI moderation gate for inbound user messages.
+ *
+ * Awaited before the workflow starts from the chat route handler — runs
+ * here (not inside the workflow) because the flow worker is stripped of
+ * `fetch`/AbortSignal, see AGENTS.md. On a positive classification the
+ * route returns a single-message refusal stream and never invokes the
+ * workflow at all.
+ *
+ * Missing `OPENAI_API_KEY` throws — the moderation gate is a security
+ * surface and silent config drift would let unfiltered turns through
+ * without anyone noticing. Transient network/HTTP failures still fail-open
+ * so a flaky moderation API can't take chat down entirely.
+ */
+
+const MODERATION_URL = 'https://api.openai.com/v1/moderations'
+const MODERATION_MODEL = 'omni-moderation-latest'
+const MODERATION_TIMEOUT_MS = 8_000
+
+export type ModerationResult =
+  | { flagged: false }
+  | { flagged: true; categories: string[] }
+
+export async function moderateText(text: string): Promise<ModerationResult> {
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY is not set — moderation gate cannot run')
+  }
+
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return { flagged: false }
+
+  try {
+    const res = await fetch(MODERATION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model: MODERATION_MODEL, input: trimmed }),
+      signal: AbortSignal.timeout(MODERATION_TIMEOUT_MS),
+    })
+
+    if (!res.ok) {
+      console.warn(`[moderation] HTTP ${res.status} — failing open`)
+      return { flagged: false }
+    }
+
+    const json = (await res.json()) as {
+      results?: Array<{
+        flagged?: boolean
+        categories?: Record<string, boolean>
+      }>
+    }
+
+    const first = json.results?.[0]
+    if (!first?.flagged) return { flagged: false }
+
+    const categories = Object.entries(first.categories ?? {})
+      .filter(([, v]) => v === true)
+      .map(([k]) => k)
+
+    return { flagged: true, categories }
+  } catch (err) {
+    console.warn('[moderation] request failed — failing open:', err)
+    return { flagged: false }
+  }
+}
+
+export const MODERATION_REFUSAL_TEXT =
+  "I can't help with that. Let's keep the conversation focused on LCA — what are you working on?"
