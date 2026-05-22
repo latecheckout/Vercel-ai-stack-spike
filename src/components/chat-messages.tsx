@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 import { isToolUIPart, getToolName, type UIMessage } from 'ai'
 import { Loader2, Search, BookOpen, Database, UserRound, Globe } from 'lucide-react'
 import { Streamdown } from 'streamdown'
@@ -195,21 +195,37 @@ function MessageBubble({
             // agent moves on to offer_lca_connect), a newer message
             // exists and this branch stops rendering. No pending chip —
             // the tee-up text itself is the cue while we wait.
+            //
+            // Safety net: under heavy turns (many tool calls in one go),
+            // the model occasionally emits the propose tool call with no
+            // accompanying text — leaving an empty bubble + floating
+            // button. Detect that case here and inject a default tee-up
+            // bubble above the button so the visitor always sees a
+            // message. See instructions-log.md (2026-05-22 batch).
             if (toolName === 'propose_lca_connect') {
               if (part.state !== 'output-available' || !isLatest) return null
+              const hasAssistantText = message.parts.some(
+                (p) => p.type === 'text' && p.text.trim().length > 0,
+              )
               return (
-                <Button
-                  key={i}
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  className="gap-1.5"
-                  disabled={isStreaming}
-                  onClick={() => onQuickReply('connect me')}
-                >
-                  <UserRound className="h-3.5 w-3.5" />
-                  Connect me
-                </Button>
+                <Fragment key={i}>
+                  {!hasAssistantText && (
+                    <div className="rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm leading-relaxed">
+                      Sounds like a strong fit — want me to set that up?
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    className="gap-1.5"
+                    disabled={isStreaming}
+                    onClick={() => onQuickReply('connect me')}
+                  >
+                    <UserRound className="h-3.5 w-3.5" />
+                    Connect me
+                  </Button>
+                </Fragment>
               )
             }
 
