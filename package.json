@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:gen-types": "supabase gen types --local > src/lib/database.types.ts",
     "db:seed-knowledge": "tsx --env-file=.env.local scripts/seed-lca-knowledge.ts",
-    "db:refresh-knowledge-sql": "tsx scripts/seed-lca-knowledge.ts --emit-migration"
+    "db:refresh-knowledge-sql": "tsx scripts/seed-lca-knowledge.ts --emit-migration",
+    "eval": "tsx --env-file=.env.local scripts/eval/runner.ts"
   },
   "dependencies": {
     "@ai-sdk/gateway": "^3.0.0",
