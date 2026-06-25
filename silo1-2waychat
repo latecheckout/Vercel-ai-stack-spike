@@ -1,0 +1,151 @@
+Silo 1 — Generalized 2-way chat experience
+
+> Source of truth for: anything user-facing where a person sends messages and a model streams replies, with tool calls visible inline, sessions persisted, and the surface able to recover from a refresh / disconnect.
+
+## 1.1 Packages and what each one does
+
+| Package | Role | Pin in this repo |
+|---|---|---|
+| `ai` | Core SDK v6 — `tool()`, `convertToModelMessages`, `generateText`, `createUIMessageStreamResponse`, `UIMessage` / `UIMessageChunk` types | `^6.0.175` |
+| `@ai-sdk/react` | The `useChat` hook | `^3.0.0` |
+| `@ai-sdk/gateway` | AI Gateway routing — never imported directly; activated by passing `provider/model` slugs | `^3.0.0` |
+| `@workflow/ai` | `WorkflowChatTransport` for v6 `useChat` (resumable workflow stream); `DurableAgent` for the loop | `^4.1.2` |
+| `@tanstack/react-query` | Side-state (panels, polling) that doesn't belong inside `useChat` | `^5.100.9` |
+| `streamdown` | Streaming-safe markdown renderer for partial assistant text | `^2.5.0` |
+
+## 1.2 The mental model
+
+The chat surface is **three layers** that have to agree on a single id:
+
+1. **Identity** — `useChatSession` (`src/hooks/use-chat-session.ts`) does `supabase.auth.signInAnonymously()` on mount; the auth user id IS the chat session id. That same id becomes `chatId` (transport), `sessions.id` (Postgres), and the FK on `messages` / `visitor_facts`.
+2. **Conversation state** — `useChat` from `@ai-sdk/react` owns the in-memory message array (`UIMessage[]` with typed `parts[]`); the server owns the durable transcript in Postgres.
+3. **Transport** — `WorkflowChatTransport` swaps in for the default `useChat` fetch transport; it captures the workflow run id from response headers and routes reconnects through `/api/chat/[runId]/stream`.
+
+Everything else (panels, fact lists, summary, email capture card, intro suggestions) is React Query around that core. Don't try to put non-conversation state through `useChat` — keep it in React Query (`use-visitor-facts.ts`, `use-session-state.ts`) and let the chat hook stay focused on messages.
+
+## 1.3 Wiring the client (`src/components/chat-interface.tsx`)
+
+The minimum viable shape:
+
+```tsx
+const transport = useMemo(
+  () => new WorkflowChatTransport({
+    api: '/api/chat',
+    prepareSendMessagesRequest: ({ id, messages, body }) => ({
+      body: { chatId: id, messages, ...body }, // chatId rides along in the body
+    }),
+    onChatSendMessage: (response) => {
+      const runId = response.headers.get('x-workflow-run-id')
+      if (runId) localStorage.setItem(RUN_ID_KEY, runId)
+    },
+    onChatEnd: () => localStorage.removeItem(RUN_ID_KEY),
+    prepareReconnectToStreamRequest: ({ api: _api, ...rest }) => {
+      const runId = localStorage.getItem(RUN_ID_KEY)
+      if (!runId) throw new Error('No active workflow run id to reconnect to')
+      return { ...rest, api: `/api/chat/${encodeURIComponent(runId)}/stream` }
+    },
+  }),
+  [],
+)
+
+const { messages, sendMessage, setMessages, status } = useChat({
+  id: sessionId ?? undefined,   // becomes chatId in transport
+  transport,
+  resume: Boolean(activeRunId), // true if localStorage had a run id at mount
+})
+const [input, setInput] = useState('')   // v6 useChat no longer owns input
+const isStreaming = status === 'streaming' || status === 'submitted'
+```
+
+### Gotchas worth calling out
+
+- **`useChat` no longer owns input state in v6** — own `input` locally via `useState` and pass to your `<ChatInput>`. Forgetting this is the most common v5 → v6 migration trip.
+- **`crypto.randomUUID()` is gated to secure contexts** (HTTPS / localhost). On a plain-HTTP IP / tailnet it's `undefined`. The repo has a `randomId()` fallback — keep it if you ever dev over a LAN address.
+- **The intro / opening message is a synthetic assistant turn inserted via `setMessages([buildIntroMessage()])`** on mount when the chat is empty. That's how you get the bot to speak first without spending tokens. Skip this on resume so you don't prepend an extra bubble in front of an in-flight stream.
+- **`resume: true` only matters if a `runId` is in localStorage at first paint.** Read it via `useMemo` before `useChat` is constructed; reading it inside an effect is too late.
+
+## 1.4 Rendering message parts (`src/components/chat-messages.tsx`)
+
+In v6, each `UIMessage` has a `parts[]` array. Three part types matter for chat:
+
+| Part type | What to render |
+|---|---|
+| `{ type: 'text', text }` | The assistant or user text. For the assistant, use `<Streamdown>{text}</Streamdown>` so partial markdown renders cleanly while streaming. For the user, render as plain text in a bubble. |
+| `tool-${name}` (e.g. `tool-search_web`) | Detected via `isToolUIPart(part)` + `getToolName(part)`. Has a `state` of `'input-streaming' \| 'input-available' \| 'output-available' \| 'output-error'` and an `input` / `output` payload. |
+| `dynamic-tool` | Same shape, used when the tool isn't statically declared. Same handling. |
+
+The repo's pattern: a `TOOL_META` registry maps each tool name to an `Icon` and a `getLabel(input)` function, and the renderer either shows a status chip (e.g. `Searching for "Acme Corp"…`) or — for tools that emit an interactive card — swaps in a custom component once `state === 'output-available'`.
+
+**Two important UX details:**
+
+1. **Chip lifecycle** — show a spinner + pending label while `state ∈ {input-streaming, input-available}`, then swap to the tool icon + label-with-`✓` once `output-available`. See `MessageBubble` in `chat-messages.tsx`.
+2. **Tool-rendered cards** — when a tool's output is meant to be a form / actionable surface (the repo's `offer_lca_connect` → `<ConnectRequestCard>`), branch on tool name + state in `MessageBubble` and render the full component instead of a chip. The card POSTs to its own API route on submit; it doesn't go back through `useChat`.
+
+### Gotchas worth calling out
+
+- **Pre-register every tool in `TOOL_META`.** A tool with no entry renders nothing — no chip, no error. Easy to miss when adding a new tool.
+- **Tool-rendered card state is local to the component.** If the visitor refreshes mid-form, they lose their input. For the spike that's fine; for production decide whether to persist draft state.
+- **`isToolUIPart`/`getToolName` are exported from `ai`** — don't roll your own `part.type.startsWith('tool-')` check; the AI SDK also emits `dynamic-tool` which the helpers handle.
+
+## 1.5 The server route (`src/app/api/chat/route.ts`)
+
+The route handler is intentionally thin:
+
+```ts
+export async function POST(req: Request) {
+  const { chatId, messages: uiMessages } = await req.json()
+  await upsertSession(chatId)                          // ensure FK target exists
+  await saveMessage(chatId, 'user', latestUserText)    // request-boundary persist
+  const modelMessages = await convertToModelMessages(uiMessages)
+  const run = await start(runChatWorkflow, [chatId, modelMessages])
+  return createUIMessageStreamResponse({
+    stream: run.getReadable<UIMessageChunk>(),
+    headers: { 'x-workflow-run-id': run.runId },
+  })
+}
+```
+
+Notes:
+
+- **`convertToModelMessages` is async in v6** (it was sync in v5). Awaiting it is mandatory.
+- **The user message persists at the request boundary, NOT inside the workflow.** That's deliberate: re-running the same POST after a transient failure shouldn't double-persist. The assistant reply persists inside the workflow's `onFinish` because by then we know exactly what was streamed.
+- **`createUIMessageStreamResponse` is the v6 helper** that sets the right SSE content type and flushes correctly. Don't `return new Response(stream)` manually.
+
+The reconnect route (`src/app/api/chat/[runId]/stream/route.ts`) is even thinner — it calls `getRun(runId).getReadable<UIMessageChunk>({ startIndex })`, surfaces `x-workflow-stream-tail-index` for the client, and lets the transport replay from the last received chunk.
+
+## 1.6 Tool definitions (shared with Silo 2 but with a UI lens)
+
+```ts
+const fetchWebsite = tool({
+  description: 'Fetch and read a public webpage. Tell the visitor first...',
+  inputSchema: z.object({ url: z.string().url() }),
+  execute: async ({ url }) => fetchPublicWebsite(url), // step lives elsewhere
+})
+```
+
+For chat-UI purposes the only fields that matter to the user surface are:
+- `description` — the model uses it; users never see it. Write it for the model.
+- `inputSchema` — a Zod object; the SDK converts to JSON Schema. **Don't hand-write JSON Schema.**
+- `execute` — returns plain data; that data lands in `part.output` on the client. Anything you want to render in a card must be in the return value.
+
+**Tool return shape design tip** (from `offer_lca_connect`): make the discriminator explicit — `{ ready: true; recipient; subject; body } | { ready: false; error }`. The card branches on `ready` and renders the error state cleanly.
+
+## 1.7 Identity + session boundary
+
+- **Anonymous Supabase auth as the session id** is the cheapest path to "every visitor gets a real `auth.users` row" without a login screen. Required setting: `enable_anonymous_sign_ins = true` in `supabase/config.toml` and the dashboard for any deployed env.
+- **`src/proxy.ts`** (Next.js 16 renamed `middleware.ts` → `proxy.ts`) calls `getUser()` on every request to rotate the JWT and keep SSR's view of auth fresh. Without this, anonymous sessions drift and SSR returns `null` even when the client thinks it's signed in.
+- **"Start over" pattern** — `resetSession()` does `signOut()` + `signInAnonymously()` so the visitor lands in a brand-new session id; combine with `setMessages([])` and clearing localStorage to fully reset the surface.
+- **Surgical tool-result removal** — when the visitor manually drops something the agent saved (the visitor-facts panel), strip the matching `tool-save_visitor_fact` part from `useChat`'s message state. Otherwise `convertToModelMessages` on the next turn will keep handing the model the original structured tool call, and it will keep referencing the deleted fact. See `handleFactDeleted` in `chat-interface.tsx`.
+
+## 1.8 Auxiliary panels with React Query
+
+The panels (visitor facts, session-state mode toggle, summary) are React Query queries with `refetchInterval: 3000` so they update as the workflow writes to Postgres mid-stream. Optimistic updates on mutations (`useDeleteVisitorFact`, `useUpdateSessionMode`) keep the panel responsive without waiting for the round-trip.
+
+This pattern matters because: **inside the workflow we can't push UI updates that aren't part of the chat stream.** If you want a side panel to react to mid-stream DB writes, polling against a thin GET endpoint is the cheap, correct option.
+
+## 1.9 Things that bit us / would bite a new user
+
+1. **`useChat` won't restart a stream from scratch on refresh** — only resume. If you want the bot to greet the visitor again on a fresh tab, do it with a synthetic intro message + an empty messages array; don't try to make `useChat` "replay" the transcript.
+2. **`status === 'submitted'` happens before the stream starts.** Treat `submitted || streaming` as "busy" for the input-disabled / chip-pending UX.
+3. **Auto-scroll has to watch the footer slot, not just messages.** Otherwise a slide-in card (intro pills, email-capture, connect form) lands below the fold and the visitor never sees it.
+4. **`Streamdown` is non-negotiable for assistant text.** Without it, partial markdown (an unclosed `**bold`) flickers raw during streaming.

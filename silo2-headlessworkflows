@@ -1,0 +1,239 @@
+# Silo 2 — Headless backend agent / durable workflow
+
+> Source of truth for: the agent loop, tools, durable side effects, AI Gateway, and the Workflow DevKit runtime split. This is what you reach for when you want an AI process that can run for minutes, survive a redeploy, retry tools safely, or be called from a queue / webhook / cron instead of a chat surface.
+
+## 2.1 Packages and what each one does
+
+| Package | Role | Pin in this repo |
+|---|---|---|
+| `workflow` | Core WDK — the `'use workflow'` / `'use step'` directives, `getWritable`, `start`, `getRun` | `^4.2.4` |
+| `@workflow/ai` | `DurableAgent` — the AI-SDK-aware tool loop that hands tool calls to your registered tools and resumes correctly | `^4.1.2` |
+| `@workflow/next` | The `withWorkflow()` SWC plugin for `next.config.ts` — injects the WDK transform so the directives compile | `^4.0.5` |
+| `ai` | `tool()`, `generateText`, `convertToModelMessages` (used inside workflows / steps just like in routes) | `^6.0.175` |
+
+**No separate daemon** — `withWorkflow()` runs the executor in-process during `next dev`. Production deploys to Vercel keep it in-process too; on a self-host you'd run a worker per the WDK docs, but the dev / Vercel path is what's tested here.
+
+## 2.2 The two-tier runtime — this is the key concept
+
+| Layer | Where it runs | What's available |
+|---|---|---|
+| **Workflow body** (`'use workflow'`) | Stripped-down "flow worker" runtime | `await`, plain JS, calls into step functions and tools. **NO** `fetch`, `WebSocket`, `AbortSignal`, `cookies()`, `Math.random()`, `Date.now()` — these either throw or break determinism on replay. |
+| **Step function** (`'use step'`) | A normal Next.js route handler the SDK auto-generates per step | Everything — `fetch`, `cookies()`, `AbortSignal`, Supabase client, full Node. |
+| **Tool `execute` body** | Inline in the workflow runtime | Same constraints as the workflow body. Tools must delegate I/O to step functions. |
+
+The workflow is the **deterministic conductor**. Steps are the **side-effecting workers**. If you keep that split in your head, every footgun becomes legible.
+
+**Concrete consequence:** a `tool({ execute })` body cannot do `fetch(...)` directly. The SDK rejects it with `"Global 'fetch' is unavailable in workflow functions."` You must call a `'use step'` function from `execute`:
+
+```ts
+// in chat/index.ts — tool wrapper lives next to the workflow
+function makeFetchWebsiteTool() {
+  return tool({
+    description: '...',
+    inputSchema: z.object({ url: z.string().url() }),
+    execute: async ({ url }) => fetchPublicWebsite(url), // ← step from ./steps
+  })
+}
+
+// in chat/steps.ts — the step is where the network call actually happens
+export async function fetchPublicWebsite(url: string): Promise<FetchResult> {
+  'use step'
+  const res = await fetch(`${EXA_API_URL}/contents`, { /* ... */ })
+  // ...
+}
+```
+
+## 2.3 The `'use step'` directive's three load-bearing rules
+
+These are **silent failures** if violated — no thrown error, just an empty `FatalError` payload at runtime.
+
+1. **Must be the first statement of the function body.** Before any other statement. Before any imports being referenced.
+2. **The function must be a *named* `async function`.** Anonymous arrows assigned to `tool({ execute: async () => { 'use step'; … } })` are skipped by the SWC transform with no warning.
+3. **The function must be reachable from the workflow's import graph.** Earlier WDK versions required step-in-the-same-file colocation. WDK v4 lifted that: steps can live in a sibling file as long as the workflow file imports them (directly or transitively). The repo uses `chat/index.ts` → `import { ... } from './steps'`, which is enough for the bundler to discover and register every step ID. Sibling files that nothing imports will silently fail to register.
+
+### Verifying step registration after a build
+
+```bash
+# bash
+grep -oE 'step//\./src/lib/agent[a-zA-Z0-9_./-]+' .next/server/chunks/*.js | sort -u
+```
+
+You should see one `step//./src/lib/agent/chat/steps//<funcName>` per exported step, plus framework-internal entries from `@workflow/ai` and `workflow`. **If a step is missing here, the workflow will fail at runtime with `{"fatal":true,"name":"FatalError"}` and no stack trace pointing at the cause.** Add this grep to a contributor checklist.
+
+## 2.4 File structure convention
+
+Per the [official SDK guidance](https://workflow-sdk.dev/docs/foundations/workflows-and-steps), each workflow lives in its own directory:
+
+```
+src/lib/agent/<workflow-name>/
+  index.ts    ← 'use workflow' function + tool wrappers
+  steps.ts    ← every 'use step' function as a named, exported async function
+```
+
+- `index.ts` exports the `runXxxWorkflow` function and *factory* functions like `makeFetchWebsiteTool()` that wrap each tool. Tool wrappers receive any closure-bound state (e.g. `sessionId`) as parameters and pass it into the step call.
+- `steps.ts` is just exported async functions with `'use step'` as the first body statement. Pure helpers that don't do I/O can sit at the bottom of the file.
+- Non-`'use step'` helpers that do AI calls (e.g. `extendSummary`, `draftConnectEmail` in `src/lib/agent/summary.ts` and `connect-request.ts`) live one level up and are called from inside a step. They use `generateText` against Gateway directly. Keeping them outside `steps.ts` keeps the step-registration grep clean and makes them reusable from non-workflow routes (e.g. `/api/email-capture`).
+
+## 2.5 The `'use workflow'` placement
+
+`'use workflow'` goes **inside the function body**, as the first statement, on WDK v4+. Not at the top of the file (that was a v3 pattern; still appears in older blog posts).
+
+```ts
+export async function runChatWorkflow(chatId: string, messages: ModelMessage[]) {
+  'use workflow'
+  const writable = getWritable<UIMessageChunk>()
+  // ...
+  const agent = new DurableAgent({ model, instructions, tools, onFinish })
+  await agent.stream({ messages: messagesForModel, writable, maxSteps: 12 })
+}
+```
+
+The route handler invokes the workflow via `start(runChatWorkflow, [args])` from `workflow/api` — it does **not** call the function directly. `start()` returns a `{ runId, getReadable }` object the route surfaces back to the client.
+
+## 2.6 `DurableAgent` — the agent loop
+
+```ts
+const agent = new DurableAgent({
+  model: 'anthropic/claude-sonnet-4.5',  // Gateway slug (see 2.8)
+  instructions: buildInstructions({ facts, summary }),
+  tools: {
+    retrieve_lca_knowledge: makeRetrieveLcaKnowledgeTool(),
+    fetch_website: makeFetchWebsiteTool(),
+    save_visitor_fact: makeSaveVisitorFactTool(chatId),
+    offer_lca_connect: makeOfferLcaConnectTool(chatId),
+    search_web: makeSearchWebTool(),
+  },
+  onFinish: async ({ text }) => {
+    await persistAssistantMessage(chatId, text) // ← a step
+  },
+})
+await agent.stream({ messages: messagesForModel, writable, maxSteps: 12 })
+```
+
+Key properties:
+
+- **`model`** is just a string. The AI Gateway (Silo 2.8) routes it to the right provider. No SDK imports needed.
+- **`tools`** is the same `tool({ description, inputSchema, execute })` shape as `useChat` server-side tools — `DurableAgent` shares the AI SDK tool format.
+- **`onFinish`** runs in the workflow runtime, so to persist the assistant reply you call a step (`persistAssistantMessage`). This is the right place to write the final transcript, kick off summarisation, fire a webhook, etc.
+- **`maxSteps`** caps the tool-loop iterations. Default in AI SDK v6 is 20; cap it lower for chat (12 here) so a stuck loop fails fast.
+
+## 2.7 Parallel work and pre-loop state
+
+Anything you load before the agent loop runs is plain `await` against steps. Use `Promise.all` for fan-out:
+
+```ts
+const [sessionState, currentFacts] = await Promise.all([
+  loadSessionState(chatId),  // 'use step' → DB read
+  loadVisitorFacts(chatId),  // 'use step' → DB read
+])
+```
+
+This is one of the underrated wins of the durable model — the workflow can compose multiple step calls as if they were local async functions, and each one is independently retryable, replayable, and observable.
+
+## 2.8 AI Gateway — implicit by passing a slug
+
+There is **no `@ai-sdk/gateway` import** in the workflow file. The Gateway is activated by:
+
+1. Setting `AI_GATEWAY_API_KEY` in the environment.
+2. Passing a slug like `'anthropic/claude-sonnet-4.5'` (or `'openai/gpt-...'`) wherever a `model:` is accepted by `DurableAgent`, `generateText`, `streamText`, etc.
+
+That's it. The SDK detects the slug shape and routes through Gateway. To swap providers it's a one-line string change. To wire fallbacks, pass `providerOptions.gateway.models: [...]` to the generation call.
+
+## 2.9 Tool wrappers — composition pattern
+
+Tools come in two flavours in the repo:
+
+1. **Stateless tool** (`fetch_website`, `search_web`) — `execute` just forwards to the step:
+   ```ts
+   execute: async ({ url }) => fetchPublicWebsite(url)
+   ```
+2. **Closure-bound tool** (`save_visitor_fact`, `offer_lca_connect`) — the wrapper closes over a workflow-level value like `sessionId` and bakes it into the step call:
+   ```ts
+   function makeSaveVisitorFactTool(sessionId: string) {
+     return tool({
+       inputSchema: z.object({ fact: z.string(), category: z.enum([...]), source: z.string() }),
+       execute: async ({ fact, category, source }) =>
+         persistVisitorFact(sessionId, fact, category, source),
+     })
+   }
+   ```
+
+Closure-bound tools are the standard way to pass session / user / tenant context into a step without letting the LLM see or control it. Never let model-controlled inputs override these — the wrapper signature is your trust boundary.
+
+## 2.10 Database access from steps — the Supabase trap
+
+The flow worker has no WebSocket. `@supabase/supabase-js` pulls in a Realtime client that *can* re-introduce that dependency unnecessarily. Two safer patterns:
+
+- **From a `'use step'`**: use the SSR client (`@/lib/supabase/server`) — the step worker is a normal Next.js route handler with `cookies()`, so `createServerClient` works. The repo's `src/lib/db/queries/*.ts` all do this. RLS is enforced (anon key + cookie).
+- **For high-volume reads from steps**: prefer raw `fetch` against PostgREST over `@supabase/supabase-js` — the latter risks pulling Realtime into the bundle. The spike hasn't hit this limit yet but it's the documented fallback.
+
+**Never** call `cookies()`, `createServerClient`, or anything that touches the request scope from the *workflow body*. It's not the stripped-runtime issue (it'd actually throw) — it's that the workflow doesn't have a request scope. The step does.
+
+## 2.11 Streaming back to the client (only relevant if there is a client)
+
+For headless / cron / webhook use cases you don't need a stream — `start(workflow, [args])` returns a `runId` and you can poll or attach later via `getRun(runId)`. For UI streaming the pattern is the one in Silo 1.5:
+
+```ts
+const run = await start(runChatWorkflow, [chatId, modelMessages])
+return createUIMessageStreamResponse({
+  stream: run.getReadable<UIMessageChunk>(),
+  headers: { 'x-workflow-run-id': run.runId },
+})
+```
+
+`run.getReadable<UIMessageChunk>({ startIndex })` is what powers the resumable reconnect endpoint at `/api/chat/[runId]/stream/route.ts` — pass a startIndex to replay from a known position. Surface `await readable.getTailIndex()` as `x-workflow-stream-tail-index` so the transport can resolve negative startIndex values.
+
+## 2.12 Persistence patterns
+
+- **Request-boundary writes** (route handler, before `start()`): non-idempotent or "must happen exactly once per request" work. The user message in `route.ts` is here on purpose — re-running the POST won't double-persist.
+- **Step writes** inside the workflow: idempotent persistence (assistant reply, fact saves, summary updates). Steps may be retried; the SDK records inputs/outputs so a retry of a step that already completed replays the recorded result rather than re-running.
+- **Non-workflow helpers calling `generateText` from a route**: used for things like the email-capture summary in `/api/email-capture/route.ts`. If the work doesn't need durability, doesn't need a tool loop, and is a one-shot generate, **don't put it in a workflow.** Just call `generateText` directly.
+
+## 2.13 What headless / non-chat workflows look like
+
+Even though the repo only ships one streaming workflow, the same structure scales to fully headless agents. The shape:
+
+```ts
+// src/lib/agent/<name>/index.ts
+export async function runMyWorkflow(input: Input): Promise<Output> {
+  'use workflow'
+  const x = await stepA(input)
+  const y = await stepB(x)
+  // optional: const agent = new DurableAgent({ ... }); await agent.generate({ ... })
+  return shape({ x, y })
+}
+
+// kick off from a webhook / cron / API route
+const run = await start(runMyWorkflow, [input])
+// poll via run.getStatus() or await run.getResult()
+```
+
+For genuinely long work, `sleep()` and `Hook` (human-in-the-loop) from `workflow` let the workflow pause for hours-to-months without holding a function open. That's where WDK earns its keep over "just write a route handler" — anywhere you'd otherwise need a queue + worker + idempotency key tracking, the workflow gives you those for free.
+
+## 2.14 Things that bit us / would bite a new user
+
+1. **Empty `FatalError` payload** in the stream → it's a step-registration miss 95% of the time. Run the grep in 2.3. Second-most-likely cause: an anonymous arrow with `'use step'` inside it (silent skip).
+2. **`Math.random()` / `Date.now()` in the workflow body** breaks replay determinism. If you need a random / timestamp, take it inside a step and return it; the SDK records the value and replays it.
+3. **Don't `console.log` huge objects from the workflow body** — they end up in the WDK event log per replay. Log inside steps instead.
+4. **Per-step retries assume idempotency.** A step that "send an email" and then "save a row" can re-send the email on retry. Split into two steps or use an idempotency key.
+5. **AI SDK v6 broke v5 in many small ways** — `convertToCoreMessages` → `convertToModelMessages` (async now), `generateObject` deprecated, default `stopWhen` jumped from 1 to 20, OpenAI `strict` defaults to `true`. When porting old code, expect to re-learn surface area.
+6. **Two new pricing meters** — Workflow steps + Gateway credits. Cheap at spike scale, worth a budget pass before production.
+7. **Vercel lock-in** — WDK and Gateway compose well *on Vercel*. Self-hosting WDK is possible but loses the dashboard. Be deliberate about adopting it on a project that might want to leave Vercel.
+
+## 2.15 Pre-PR checklist for any workflow change
+
+```bash
+pnpm typecheck     # zero errors
+pnpm build         # must pass — catches step-registration issues at build time
+# then grep for the step IDs (see 2.3)
+```
+
+A green build does NOT guarantee a step is registered; a green build + a passing grep does.
+
+## 2.16 When NOT to use a workflow
+
+Per the repo's `pros-and-cons.md`:
+
+- A request/response chatbot that finishes in < 30s: **mostly insurance with a non-trivial mental-model tax.** Adopt only if you genuinely need refresh-mid-stream survivability or per-tool retries.
+- A one-shot `generateText` call (summarisation, classification, draft generation): **don't workflow-ify it.** Call `generateText` from a route handler. See `/api/email-capture/route.ts` for the canonical "don't workflow this" example.
+- Things that need to run for minutes / hours, span human approval, or must survive a redeploy: **this is the use case.** Adopt without hesitation.
